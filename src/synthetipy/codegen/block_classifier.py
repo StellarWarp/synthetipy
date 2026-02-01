@@ -1,51 +1,39 @@
 """
 块类型识别器
 用于识别 PDX 代码块的类型：trigger、effect、value、nested_object
+
+使用自动生成的游戏规则进行精确识别
 """
 
 from typing import Optional, List
 from ..ast_nodes import *
+from ..game_rules import (
+    ALL_TRIGGERS, ALL_EFFECTS, SCOPES,
+    SHARED_IDENTIFIERS, TRIGGER_EXCLUSIVE, EFFECT_EXCLUSIVE,
+    CONTROL_FLOW_BLOCKS, HIDDEN_BLOCKS, RANDOM_BLOCKS
+)
+from ..pdx_constants import FILE_TYPE_RULES, LOGIC_OPERATORS
 
 
 # ============================================
-# 键名知识库
+# 键名知识库（从游戏文档自动生成）
 # ============================================
 
-# Trigger 块的键名（返回 bool）
-TRIGGER_KEYS = {
-    # 通用 trigger
-    'potential', 'allow', 'can_build', 'destroy_trigger',
-    'abort_trigger', 'completion_trigger', 'abort_effect_trigger',
-    
-    # 条件检查
-    'trigger', 'limit', 'custom_tooltip_with_fail_root',
-    
-    # AI 条件
-    'ai_will_do',
-    
-    # 事件条件
-    'fire_only_once', 'is_triggered_only',
-    
-    # 带条件的块（在某些上下文中是 trigger）
-    'AND', 'OR', 'NOT', 'NOR', 'NAND',
-}
+# Trigger 块的键名（从游戏文档提取）
+TRIGGER_KEYS = TRIGGER_EXCLUSIVE | SHARED_IDENTIFIERS
 
-# Effect 块的键名（返回 None，有副作用）
-EFFECT_KEYS = {
-    # 通用 effect
-    'effect'
-    
-    # 事件效果
-    'immediate', 'after',
-    
-    # 回调效果
-    'success', 'fail', 'abort_effect',
-}
+# Effect 块的键名（从游戏文档提取）
+EFFECT_KEYS = EFFECT_EXCLUSIVE | SHARED_IDENTIFIERS
 
-# Value 块的键名（返回 float/int）
+# Value 块的键名（权重计算相关）
 VALUE_KEYS = {
-    # 权重计算
     'base', 'weight', 'factor',
+}
+
+# 特殊结构（需要上下文判断）
+CONTEXT_DEPENDENT_KEYS = {
+    'modifier',  # 在 script_values 中是算术操作，在其他地方是嵌套对象
+    'ai_weight',  # 可能是 value，也可能是包含 weight 的嵌套对象
 }
 
 # 特殊结构（需要上下文判断）
@@ -59,44 +47,7 @@ CONTEXT_DEPENDENT_KEYS = {
 # 文件类型规则
 # ============================================
 
-FILE_TYPE_RULES = {
-    'common/scripted_triggers': 'trigger',
-    'common/scripted_effects': 'effect',
-    'common/script_values': 'value',
-    'common/buildings': 'object',
-    'common/districts': 'object',
-    'common/technologies': 'object',
-    'common/technology': 'object',
-    'common/edicts': 'object',
-    'common/decisions': 'object',
-    'common/traits': 'object',
-    'common/ship_sizes': 'object',
-    'common/component_templates': 'object',
-    'common/scripted_modifiers': 'object',
-    'common/static_modifiers': 'object',
-    'common/ascension_perks': 'object',
-    'common/policies': 'object',
-    'events': 'event',
-}
-
-
-def get_file_type(file_path: str) -> str:
-    """
-    根据文件路径获取默认类型
-    
-    Args:
-        file_path: 文件路径
-    
-    Returns:
-        'trigger' | 'effect' | 'value' | 'object' | 'event'
-    """
-    file_path = file_path.replace('\\', '/')
-    
-    for pattern, obj_type in FILE_TYPE_RULES.items():
-        if pattern in file_path:
-            return obj_type
-    
-    return 'object'  # 默认
+# 文件类型规则从 pdx_constants 导入
 
 
 # ============================================
@@ -105,7 +56,7 @@ def get_file_type(file_path: str) -> str:
 
 def analyze_block_structure(block: BlockNode) -> str:
     """
-    通过分析块的结构推断类型
+    通过分析块的结构推断类型（当键名不在已知规则中时使用）
     
     Args:
         block: 要分析的块节点
@@ -119,9 +70,9 @@ def analyze_block_structure(block: BlockNode) -> str:
     # 统计特征
     has_comparisons = False      # 比较运算符 (>=, <, etc.)
     has_logic_ops = False        # 逻辑运算符 (AND, OR, NOT)
-    has_assignments = False      # 赋值操作
+    has_known_triggers = False   # 已知的 trigger 标识符
+    has_known_effects = False    # 已知的 effect 标识符
     has_arithmetic = False       # 算术操作 (add, multiply)
-    has_simple_bool = False      # 简单布尔值 (yes/no)
     
     for stmt in block.statements:
         if isinstance(stmt, ComparisonNode):
@@ -129,34 +80,27 @@ def analyze_block_structure(block: BlockNode) -> str:
         elif isinstance(stmt, PropertyNode):
             key = stmt.key if isinstance(stmt.key, str) else str(stmt.key)
             
-            # Trigger 特征
-            if key in ('AND', 'OR', 'NOT', 'NAND', 'NOR'):
-                has_logic_ops = True
-            elif key in ('limit', 'trigger'):
-                has_logic_ops = True
+            # 检查是否是已知的 trigger/effect
+            if key in TRIGGER_KEYS:
+                has_known_triggers = True
+            elif key in EFFECT_KEYS:
+                has_known_effects = True
             
-            # Effect 特征
-            elif key.startswith(('add_', 'remove_', 'set_', 'change_', 'create_')):
-                has_assignments = True
+            # 逻辑运算符
+            if key in LOGIC_OPERATORS:
+                has_logic_ops = True
             
             # Value 特征
             elif key in ('base', 'add', 'multiply', 'factor', 'weight'):
                 has_arithmetic = True
-            
-            # 简单布尔值
-            if isinstance(stmt.value, LiteralNode) and stmt.value.value_type == 'bool':
-                has_simple_bool = True
     
-    # 推断类型
-    if has_arithmetic and not (has_logic_ops or has_assignments):
+    # 推断类型（基于游戏规则）
+    if has_arithmetic and not (has_logic_ops or has_known_triggers or has_known_effects):
         return 'value'
-    elif has_logic_ops or has_comparisons:
+    elif has_known_triggers or has_logic_ops or has_comparisons:
         return 'trigger'
-    elif has_assignments:
+    elif has_known_effects:
         return 'effect'
-    elif has_simple_bool:
-        # 大量布尔值通常是 trigger
-        return 'trigger'
     else:
         return 'nested_object'
 
@@ -176,8 +120,26 @@ class BlockClassifier:
             file_path: 当前处理的文件路径
         """
         self.file_path = file_path
-        self.file_type = get_file_type(file_path)
+        self.file_type = self._get_file_type(file_path)
         self.context_stack: List[str] = []  # 上下文栈
+    
+    def _get_file_type(self, file_path: str) -> str:
+        """
+        根据文件路径获取默认类型
+        
+        Args:
+            file_path: 文件路径
+        
+        Returns:
+            'trigger' | 'effect' | 'value' | 'object' | 'event'
+        """
+        file_path = file_path.replace('\\', '/')
+        
+        for pattern, obj_type in FILE_TYPE_RULES.items():
+            if pattern in file_path:
+                return obj_type
+        
+        return 'object'  # 默认
     
     def classify_block(self, key: str, block: BlockNode) -> str:
         """

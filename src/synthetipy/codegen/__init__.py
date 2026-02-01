@@ -21,7 +21,7 @@
 """
 
 from .python_generator import PythonCodeGenerator, generate_python_code
-from .block_classifier import BlockClassifier, get_file_type
+from .block_classifier import BlockClassifier
 from .inline_script_generator import (
     InlineScriptGenerator,
     InlineScriptContext,
@@ -33,7 +33,7 @@ __all__ = [
     'PythonCodeGenerator',
     'generate_python_code',
     'BlockClassifier',
-    'get_file_type',
+    'BlockClassifier',
     'InlineScriptGenerator',
     'InlineScriptContext',
     'generate_inline_script',

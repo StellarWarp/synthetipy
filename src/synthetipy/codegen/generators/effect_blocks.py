@@ -4,9 +4,9 @@ Effect 块效果生成器
 处理带参数块的效果，如 add_modifier, fire_event 等
 """
 
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 from ...ast_nodes import ASTNode, BlockNode, PropertyNode, LiteralNode
-from ...pdx_constants import BLOCK_EFFECTS, PRIMARY_KEYS, RESOURCE_KEYS
+from ...pdx_constants import BLOCK_EFFECTS
 from ..runtime_deps import format_identifier
 
 
@@ -23,8 +23,6 @@ class EffectBlockGenerator:
     
     # 使用集中管理的常量
     BLOCK_EFFECTS = BLOCK_EFFECTS
-    PRIMARY_KEYS = PRIMARY_KEYS
-    RESOURCE_KEYS = RESOURCE_KEYS
     
     def __init__(self, parent_generator):
         self.parent = parent_generator
@@ -40,35 +38,29 @@ class EffectBlockGenerator:
         
         add_modifier = { modifier = x years = 10 }
         -> scope.add_modifier('x', years=10)
+        
+        注意：不再使用硬编码的 PRIMARY_KEYS，所有参数都作为关键字参数。
+        未来可以根据游戏规则的 params 定义来优化参数顺序。
         """
         if not isinstance(value, BlockNode):
             return False
         
-        # 提取参数
-        args = []
+        # 提取所有参数作为关键字参数
         kwargs = {}
         
         for stmt in value.statements:
             if isinstance(stmt, PropertyNode):
                 k = stmt.key if isinstance(stmt.key, str) else str(stmt.key)
                 v = self._extract_value(stmt.value)
-                
-                # 主参数
-                if k in self.PRIMARY_KEYS:
-                    args.insert(0, f"'{v}'")
-                # 资源类型作为第一个参数
-                elif k in self.RESOURCE_KEYS:
-                    args.insert(0, f"'{k}'")
-                    args.append(str(v))
-                else:
-                    # 其他作为关键字参数
-                    kwargs[k] = v
+                kwargs[k] = v
         
-        # 构建方法调用
-        all_args = args + [f"{k}={self._format_kwarg(v)}" for k, v in kwargs.items()]
-        args_str = ", ".join(all_args)
+        # 构建方法调用（所有参数作为关键字参数）
+        if kwargs:
+            args_str = ", ".join(f"{k}={self._format_value(v)}" for k, v in kwargs.items())
+            self.parent._add_line(f"{self.context.current_scope_var}.{key}({args_str})")
+        else:
+            self.parent._add_line(f"{self.context.current_scope_var}.{key}()")
         
-        self.parent._add_line(f"{self.context.current_scope_var}.{key}({args_str})")
         return True
     
     def generate_method_call(self, key: str, value: BlockNode) -> bool:
@@ -84,7 +76,7 @@ class EffectBlockGenerator:
                 kwargs[k] = v
         
         if kwargs:
-            args_str = ", ".join(f"{k}={self._format_kwarg(v)}" for k, v in kwargs.items())
+            args_str = ", ".join(f"{k}={self._format_value(v)}" for k, v in kwargs.items())
             self.parent._add_line(f"{self.context.current_scope_var}.{key}({args_str})")
         else:
             self.parent._add_line(f"{self.context.current_scope_var}.{key}()")
@@ -96,24 +88,11 @@ class EffectBlockGenerator:
         生成简单效果
         
         add_building = building_xxx -> scope.add_building('building_xxx')
-        add_minerals = $MINERALS$ -> scope.add_minerals(MINERALS)
         add_minerals = 100 -> scope.add_minerals(100)
+        add_minerals = $MINERALS$ -> scope.add_minerals(MINERALS)
         """
         val = self._extract_value(value)
-        
-        # 判断是否需要加引号
-        # 1. 如果是纯数字，不加引号
-        try:
-            float(val)
-            formatted_val = val
-        except (ValueError, TypeError):
-            # 2. 如果 _extract_value 返回的是参数名（不含$），检查是否在参数列表中
-            if hasattr(self.parent, 'parameters') and val in self.parent.parameters:
-                # 是宏参数，不加引号
-                formatted_val = val
-            else:
-                # 3. 其他情况（游戏标识符、枚举等），加引号
-                formatted_val = repr(val)
+        formatted_val = self._format_value(val)
         
         self.parent._add_line(f"{self.context.current_scope_var}.{key}({formatted_val})")
         return True
@@ -168,7 +147,7 @@ class EffectBlockGenerator:
         
         # 生成 meta.inline_script 调用
         if params:
-            params_str = ", ".join(f"{k}={self._format_kwarg(v)}" 
+            params_str = ", ".join(f"{k}={self._format_value(v)}" 
                                    for k, v in params.items())
             self.parent._add_line(f"meta.inline_script(script='{script_path}', {params_str})")
         else:
@@ -207,7 +186,14 @@ class EffectBlockGenerator:
             return self.generate_inline_script(node.value)
     
     def _extract_value(self, value: ASTNode) -> str:
-        """提取值的字符串表示"""
+        """
+        提取值的字符串表示
+        
+        处理：
+        - 字面量（数字、字符串、布尔值）
+        - 宏参数（$PARAM$）
+        - 表达式节点
+        """
         if isinstance(value, LiteralNode):
             val_str = str(value.value)
             # 检查是否是简单宏参数
@@ -242,21 +228,77 @@ class EffectBlockGenerator:
                 f"_extract_value 遇到未处理的节点类型: {type(value).__name__}"
             )
     
-    def _format_kwarg(self, value) -> str:
-        """格式化关键字参数值"""
+    def _format_value(self, value: Any) -> str:
+        """
+        格式化值为 Python 代码
+        
+        规则：
+        1. 数字（int/float）→ 不加引号
+        2. 布尔值（bool）→ 不加引号（Python True/False）
+        3. 宏参数（已经是参数名）→ 不加引号
+        4. 游戏标识符、枚举等 → 加引号
+        
+        未来可扩展：
+        - 检查是否可以转换为 Python 引用（如 buildings.xxx）
+        - 目前默认作为字面量处理
+        """
+        # 布尔值
         if isinstance(value, bool):
             return str(value)
-        elif isinstance(value, (int, float)):
+        
+        # 数字
+        if isinstance(value, (int, float)):
             return str(value)
-        elif isinstance(value, str):
-            # 检查是否是数字
+        
+        # 字符串
+        if isinstance(value, str):
+            # 检查是否是宏参数（由 _extract_value 返回的纯参数名）
+            if hasattr(self.parent, 'parameters') and value in self.parent.parameters:
+                return value  # 宏参数，不加引号
+            
+            # 检查是否是数字字符串
             try:
                 int(value)
-                return value
+                return value  # 数字字符串，不加引号
             except ValueError:
                 try:
                     float(value)
-                    return value
+                    return value  # 浮点数字符串，不加引号
                 except ValueError:
-                    return f"'{value}'"
-        return f"'{value}'"
+                    pass
+            
+            # 检查是否是布尔字符串
+            if value in ('yes', 'no'):
+                return 'True' if value == 'yes' else 'False'
+            
+            # 尝试解析为游戏引用（预留接口）
+            resolved_ref = self._try_resolve_reference(value)
+            if resolved_ref:
+                return resolved_ref
+            
+            # 默认：作为字符串字面量
+            return repr(value)
+        
+        # 其他类型
+        return repr(value)
+    
+    def _try_resolve_reference(self, identifier: str) -> Optional[str]:
+        """
+        尝试将游戏标识符解析为 Python 引用
+        
+        例如：'building_capital' -> buildings.building_capital
+        
+        当前实现：总是返回 None（默认作为字面量）
+        未来可以扩展为查询游戏数据库并转换为引用
+        
+        Args:
+            identifier: 游戏标识符（如 'building_xxx', 'tech_xxx'）
+        
+        Returns:
+            Python 引用字符串，或 None（表示应该作为字面量）
+        """
+        # TODO: 实现引用解析
+        # - 检查是否匹配已知模式（如 building_*, tech_*, modifier_*）
+        # - 查询游戏数据库验证引用存在
+        # - 返回对应的 Python 引用（如 'buildings.xxx'）
+        return None
