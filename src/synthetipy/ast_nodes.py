@@ -244,15 +244,16 @@ class BlockNode(ASTNode):
         return f"Block({len(self.statements)} statements)"
 
 
-class ValueNode(ASTNode):
-    """标量值
+class LiteralNode(ASTNode):
+    """字面量节点（编译时常量值）
     
     支持的类型:
         - int: 100
         - float: 3.14
-        - bool: yes, no
+        - bool: yes, no (PDX 语法)
         - string: "some text"
-        - identifier: research, @b1_time
+        - identifier: research (枚举值/标识符常量)
+        - constant: @b1_time (编译时常量引用)
     """
     
     def __init__(self, value: Union[int, float, bool, str], value_type: str = 'auto'):
@@ -288,7 +289,7 @@ class ValueNode(ASTNode):
                         self.value = int(value)
                 # 检查是否是变量引用
                 elif value.startswith('@'):
-                    self.value_type = 'variable'
+                    self.value_type = 'constant'
                     self.value = value
                 else:
                     self.value_type = 'identifier'
@@ -298,10 +299,10 @@ class ValueNode(ASTNode):
             self.value = value
     
     def accept(self, visitor):
-        return visitor.visit_value(self)
+        return visitor.visit_literal(self)
     
     def __repr__(self):
-        return f"Value({self.value}, type={self.value_type})"
+        return f"Literal({self.value}, type={self.value_type})"
     
     def __str__(self):
         if self.value_type == 'bool':
@@ -318,7 +319,7 @@ class ListNode(ASTNode):
     包含多个值的列表（不是键值对）
     """
     
-    def __init__(self, items: List[ValueNode]):
+    def __init__(self, items: List[Union[LiteralNode, 'IdentifierExpressionNode']]):
         super().__init__()
         self.items = items
         for item in items:
@@ -760,8 +761,12 @@ class ASTVisitor(ABC):
         for stmt in node.statements:
             stmt.accept(self)
     
-    def visit_value(self, node: ValueNode):
+    def visit_literal(self, node: LiteralNode):
         pass
+    
+    # Backward compatibility alias
+    def visit_value(self, node: LiteralNode):
+        return self.visit_literal(node)
     
     def visit_list(self, node: ListNode):
         for item in node.items:
@@ -853,9 +858,9 @@ def create_property(key: str, value: Any) -> PropertyNode:
     elif isinstance(value, dict):
         return PropertyNode(key, dict_to_block(value))
     elif isinstance(value, list):
-        return PropertyNode(key, ListNode([ValueNode(v) for v in value]))
+        return PropertyNode(key, ListNode([LiteralNode(v) for v in value]))
     else:
-        return PropertyNode(key, ValueNode(value))
+        return PropertyNode(key, LiteralNode(value))
 
 
 def dict_to_block(data: Dict[str, Any]) -> BlockNode:
@@ -873,7 +878,7 @@ def block_to_dict(block: BlockNode) -> Dict[str, Any]:
         if isinstance(stmt, PropertyNode):
             if isinstance(stmt.value, BlockNode):
                 result[stmt.key] = block_to_dict(stmt.value)
-            elif isinstance(stmt.value, ValueNode):
+            elif isinstance(stmt.value, LiteralNode):
                 result[stmt.key] = stmt.value.value
             elif isinstance(stmt.value, ListNode):
                 result[stmt.key] = [item.value for item in stmt.value.items]

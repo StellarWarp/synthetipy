@@ -1,20 +1,27 @@
 """
 PDXLang Patcher - Inline Script 解析器
 处理 Stellaris 的 inline_script 引用和展开
+采用 AST 后处理策略：解析后在 AST 层面展开，并添加来源追踪
 """
 
 import re
 from pathlib import Path
-from typing import Dict, Optional, Union
+from typing import Dict, Optional, Union, List, Tuple
 from .parser import parse
 from .ast_nodes import (
-    ASTNode, DocumentNode, ObjectNode, PropertyNode, BlockNode, ValueNode,
-    ComparisonNode, ConditionNode
+    ASTNode, DocumentNode, ObjectNode, PropertyNode, BlockNode, 
+    LiteralNode, InlineScriptNode, ConditionNode, ComparisonNode, IdentifierExpressionNode
+)
+from .inline_script_utils import (
+    InlineScriptLoader,
+    extract_script_info,
+    replace_parameters,
+    is_inline_script,
 )
 
 
 class InlineScriptResolver:
-    """Inline Script 解析和展开器"""
+    """Inline Script 解析和展开器（AST 后处理）"""
     
     def __init__(self, game_root: Union[str, Path]):
         """
@@ -24,291 +31,200 @@ class InlineScriptResolver:
             game_root: Stellaris 游戏根目录
         """
         self.game_root = Path(game_root)
+        self.loader = InlineScriptLoader(game_root)
         self.scripts_root = self.game_root / "common" / "inline_scripts"
-        self.scripts_cache: Dict[str, BlockNode] = {}  # 缓存已加载的脚本
-        
-    def load_script(self, script_path: str) -> Optional[BlockNode]:
-        """
-        加载 inline_script 文件
-        
-        Args:
-            script_path: 脚本路径，例如 "jobs/roboticist_add" 或 "paragon/num_traits_with_modifier"
-            
-        Returns:
-            解析后的代码块，如果文件不存在则返回 None
-        """
-        # 检查缓存
-        if script_path in self.scripts_cache:
-            return self.scripts_cache[script_path]
-        
-        # 构建文件路径
-        script_file = self.scripts_root / f"{script_path}.txt"
-        
-        if not script_file.exists():
-            print(f"Warning: Inline script not found: {script_path}")
-            return None
-        
-        try:
-            # 读取文件
-            with open(script_file, 'r', encoding='utf-8-sig') as f:
-                content = f.read()
-            
-            # 解析文件（inline_script 文件没有顶层对象声明，直接是内容）
-            # 我们需要包装一下让 parser 能解析
-            wrapped_content = f"_inline_wrapper = {{\n{content}\n}}"
-            ast = parse(wrapped_content)
-            
-            # 提取内容
-            if ast.statements and isinstance(ast.statements[0], ObjectNode):
-                block = ast.statements[0].body
-                self.scripts_cache[script_path] = block
-                return block
-            
-            return None
-            
-        except Exception as e:
-            print(f"Error loading inline script {script_path}: {e}")
-            return None
+        self.expansion_depth = 0  # 当前展开深度，用于防止无限递归
     
-    def resolve_inline_script_property(
-        self, 
-        inline_prop: PropertyNode,
-        params: Optional[Dict[str, str]] = None
-    ) -> Optional[BlockNode]:
+    def load_script(self, script_path: str) -> Optional[str]:
+        """加载 inline_script 文件"""
+        return self.loader.load(script_path)
+    
+    def _replace_parameters(self, text: str, params: Dict[str, str]) -> str:
+        """替换参数占位符（兼容接口）"""
+        return replace_parameters(text, params)
+    
+    def _extract_params_from_ast(self, node: PropertyNode) -> Tuple[Optional[str], Dict[str, str]]:
+        """从 AST 节点提取脚本信息"""
+        return extract_script_info(node)
+    
+    def _is_inline_script(self, node: ASTNode) -> bool:
+        """检查节点是否是 inline_script"""
+        return is_inline_script(node)
+    
+    def _add_source_metadata(self, node: ASTNode, source_file: str, original_line: int):
         """
-        解析 inline_script 属性，返回展开后的代码块
+        为节点添加来源元数据
         
         Args:
-            inline_prop: inline_script 属性节点
-            params: 额外的参数（如果 inline_prop 已经包含参数，会合并）
+            node: AST 节点
+            source_file: 来源文件路径
+            original_line: 原始行号
+        """
+        if not hasattr(node, '_metadata'):
+            node._metadata = {}
+        node._metadata['source_file'] = source_file
+        node._metadata['source_line'] = original_line
+        node._metadata['is_expanded'] = True
+    
+    def expand_ast_node(self, node: PropertyNode) -> List[ASTNode]:
+        """
+        展开单个 inline_script 节点为多个语句
+        
+        Args:
+            node: inline_script 属性节点
             
         Returns:
-            展开后的代码块，参数已替换
+            展开后的语句列表
         """
-        if inline_prop.key != 'inline_script':
-            return None
-        
-        script_path = None
-        script_params = params or {}
-        
-        # 解析 inline_script 的值
-        if isinstance(inline_prop.value, ValueNode):
-            # 简单形式: inline_script = jobs/roboticist_add
-            script_path = inline_prop.value.value
-            
-        elif isinstance(inline_prop.value, BlockNode):
-            # 带参数形式: inline_script = { script = ... PARAM = value }
-            script_prop = inline_prop.value.get_property('script')
-            if script_prop and isinstance(script_prop.value, ValueNode):
-                script_path = script_prop.value.value
-            
-            # 提取参数
-            for stmt in inline_prop.value.statements:
-                if isinstance(stmt, PropertyNode) and stmt.key != 'script':
-                    # 参数值
-                    if isinstance(stmt.value, ValueNode):
-                        script_params[stmt.key] = str(stmt.value.value)
-                    else:
-                        # 复杂值暂时转为字符串
-                        script_params[stmt.key] = str(stmt.value)
+        # 提取参数
+        script_path, params = self._extract_params_from_ast(node)
         
         if not script_path:
-            return None
+            print(f"Warning: Could not extract script path from inline_script at line {node.line}")
+            return [node]  # 保留原节点
         
-        # 加载脚本
-        script_block = self.load_script(script_path)
-        if not script_block:
-            return None
+        # 加载脚本文本
+        script_text = self.load_script(script_path)
+        if not script_text:
+            return [node]  # 保留原节点
         
-        # 替换参数
-        if script_params:
-            script_block = self._replace_parameters(script_block, script_params)
+        # 替换参数（文本级别）
+        if params:
+            script_text = self._replace_parameters(script_text, params)
         
-        return script_block
-    
-    def _replace_parameters(self, block: BlockNode, params: Dict[str, str]) -> BlockNode:
-        """
-        替换代码块中的参数占位符 $PARAM$
-        
-        Args:
-            block: 原始代码块
-            params: 参数字典
+        # 解析为 AST（包装为 block）
+        try:
+            wrapped = f"_wrapper = {{\n{script_text}\n}}"
+            ast = parse(wrapped)
             
-        Returns:
-            替换后的新代码块
-        """
-        # 深拷贝并替换
-        new_statements = []
-        
-        for stmt in block.statements:
-            new_stmt = self._replace_in_node(stmt, params)
-            if new_stmt:
-                new_statements.append(new_stmt)
-        
-        return BlockNode(new_statements)
-    
-    def _replace_in_node(self, node: ASTNode, params: Dict[str, str]) -> ASTNode:
-        """递归替换节点中的参数"""
-        if isinstance(node, PropertyNode):
-            # 替换 key
-            new_key = self._replace_string(node.key, params)
-            # 递归替换 value
-            new_value = self._replace_in_node(node.value, params)
-            new_prop = PropertyNode(new_key, new_value)
-            new_prop.line = node.line
-            new_prop.column = node.column
-            return new_prop
+            if not ast.statements or not isinstance(ast.statements[0], ObjectNode):
+                print(f"Warning: Failed to parse inline_script {script_path}")
+                return [node]
             
-        elif isinstance(node, ValueNode):
-            # 替换值
-            new_val = self._replace_string(str(node.value), params)
-            new_value = ValueNode(new_val, node.value_type)
-            new_value.line = node.line
-            new_value.column = node.column
-            return new_value
+            statements = ast.statements[0].body.statements
             
-        elif isinstance(node, BlockNode):
-            new_statements = [
-                self._replace_in_node(stmt, params) 
-                for stmt in node.statements
-            ]
-            new_block = BlockNode(new_statements)
-            new_block.line = node.line
-            new_block.column = node.column
-            return new_block
+            # 为展开的节点添加来源元数据
+            source_file = f"inline_scripts/{script_path}.txt"
+            for stmt in statements:
+                self._add_source_metadata(stmt, source_file, stmt.line if hasattr(stmt, 'line') else 0)
             
-        elif isinstance(node, ComparisonNode):
-            new_left = self._replace_string(node.left, params)
-            new_right = self._replace_in_node(node.right, params)
-            new_comp = ComparisonNode(new_left, node.operator, new_right)
-            new_comp.line = node.line
-            new_comp.column = node.column
-            return new_comp
-            
-        elif isinstance(node, ConditionNode):
-            new_body = self._replace_in_node(node.body, params)
-            new_cond = ConditionNode(node.operator, new_body)
-            new_cond.line = node.line
-            new_cond.column = node.column
-            return new_cond
-            
-        else:
-            # 其他类型暂时原样返回
-            return node
-    
-    def _replace_string(self, text: str, params: Dict[str, str]) -> str:
-        """替换字符串中的 $PARAM$ 占位符"""
-        result = text
-        for key, value in params.items():
-            # 替换 $KEY$ 格式
-            result = result.replace(f"${key}$", value)
-        return result
-    
-    def unpack_inline_scripts(self, node: ASTNode, recursive: bool = True) -> ASTNode:
-        """
-        展开节点中的所有 inline_script 引用
-        
-        Args:
-            node: 要处理的 AST 节点
-            recursive: 是否递归展开嵌套的 inline_script
-            
-        Returns:
-            展开后的新节点
-        """
-        if isinstance(node, ObjectNode):
-            # 处理对象的 body
-            new_body = self.unpack_inline_scripts(node.body, recursive)
-            new_obj = ObjectNode(node.name, new_body)
-            new_obj.line = node.line
-            new_obj.column = node.column
-            return new_obj
-            
-        elif isinstance(node, BlockNode):
-            new_statements = []
-            
-            for stmt in node.statements:
-                if isinstance(stmt, PropertyNode) and stmt.key == 'inline_script':
-                    # 展开 inline_script
-                    expanded = self.resolve_inline_script_property(stmt)
-                    
-                    if expanded:
-                        # 如果递归，继续展开嵌套的 inline_script
-                        if recursive:
-                            expanded = self.unpack_inline_scripts(expanded, recursive)
-                        
-                        # 添加展开后的语句
-                        new_statements.extend(expanded.statements)
+            # 递归展开（如果有嵌套的 inline_script）
+            # 注意：我们需要像 expand_block 那样处理，因为可能有嵌套的 inline_script 需要1→N展开
+            self.expansion_depth += 1
+            if self.expansion_depth < 10:  # 防止无限递归
+                expanded_statements = []
+                for stmt in statements:
+                    if self._is_inline_script(stmt):
+                        # 嵌套的 inline_script，递归展开为多个语句
+                        nested_expanded = self.expand_ast_node(stmt)
+                        expanded_statements.extend(nested_expanded)
                     else:
-                        # 如果无法展开，保留原样
-                        new_statements.append(stmt)
-                else:
-                    # 递归处理其他语句
-                    new_stmt = self.unpack_inline_scripts(stmt, recursive)
-                    new_statements.append(new_stmt)
+                        # 普通语句，递归处理其内部
+                        expanded = self.expand_statement(stmt)
+                        expanded_statements.append(expanded)
+                statements = expanded_statements
+            self.expansion_depth -= 1
             
-            new_block = BlockNode(new_statements)
-            new_block.line = node.line
-            new_block.column = node.column
-            return new_block
+            return statements
             
-        elif isinstance(node, PropertyNode):
-            # 递归处理属性的值
-            new_value = self.unpack_inline_scripts(node.value, recursive)
+        except Exception as e:
+            print(f"Error expanding inline_script {script_path}: {e}")
+            return [node]
+    
+    def expand_statement(self, node: ASTNode) -> ASTNode:
+        """
+        递归展开语句中的 inline_script
+        
+        Args:
+            node: AST 节点
+            
+        Returns:
+            展开后的节点（注意：如果是 inline_script，应该在 expand_block 中处理）
+        """
+        if isinstance(node, PropertyNode):
+            # ⚠️ 注意：这里不应该单独遇到 inline_script PropertyNode
+            # inline_script 应该在 expand_block 中被1→N展开
+            # 这里只是递归处理值部分
+            new_value = self.expand_statement(node.value)
             new_prop = PropertyNode(node.key, new_value)
             new_prop.line = node.line
             new_prop.column = node.column
+            if hasattr(node, '_metadata'):
+                new_prop._metadata = node._metadata
             return new_prop
             
+        elif isinstance(node, BlockNode):
+            return self.expand_block(node)
+            
         elif isinstance(node, ConditionNode):
-            new_body = self.unpack_inline_scripts(node.body, recursive)
+            new_body = self.expand_statement(node.body)
             new_cond = ConditionNode(node.operator, new_body)
             new_cond.line = node.line
             new_cond.column = node.column
+            if hasattr(node, '_metadata'):
+                new_cond._metadata = node._metadata
             return new_cond
             
-        elif isinstance(node, DocumentNode):
-            new_statements = [
-                self.unpack_inline_scripts(stmt, recursive) 
-                for stmt in node.statements
-            ]
-            return DocumentNode(new_statements)
+        elif isinstance(node, ObjectNode):
+            new_body = self.expand_statement(node.body)
+            new_obj = ObjectNode(node.name, new_body)
+            new_obj.line = node.line
+            new_obj.column = node.column
+            if hasattr(node, '_metadata'):
+                new_obj._metadata = node._metadata
+            return new_obj
             
         else:
-            # 其他类型原样返回
+            # 其他类型直接返回
             return node
     
-    def extract_inline_objects(self, script_path: str) -> list:
+    def expand_block(self, block: BlockNode) -> BlockNode:
         """
-        提取 inline_script 中定义的对象
-        
-        用于处理对象级别的 inline_script
+        展开 BlockNode 中的所有 inline_script
         
         Args:
-            script_path: 脚本路径
+            block: 代码块节点
             
         Returns:
-            对象列表
+            展开后的代码块
         """
-        block = self.load_script(script_path)
-        if not block:
-            return []
-        
-        # 查找所有顶层定义的对象
-        # inline_script 中的对象级定义通常直接在顶层
-        objects = []
+        new_statements = []
         
         for stmt in block.statements:
-            # 查找形如 object_name = { ... } 的模式
-            if isinstance(stmt, PropertyNode):
-                # 检查值是否是 Block
-                if isinstance(stmt.value, BlockNode):
-                    # 转换为 Object
-                    obj = ObjectNode(stmt.key, stmt.value)
-                    obj.line = stmt.line
-                    obj.column = stmt.column
-                    objects.append(obj)
+            if self._is_inline_script(stmt):
+                # 展开为多个语句
+                expanded = self.expand_ast_node(stmt)
+                new_statements.extend(expanded)
+            else:
+                # 递归处理其他语句
+                expanded = self.expand_statement(stmt)
+                new_statements.append(expanded)
         
-        return objects
+        new_block = BlockNode(new_statements)
+        new_block.line = block.line
+        new_block.column = block.column
+        if hasattr(block, '_metadata'):
+            new_block._metadata = block._metadata
+        
+        return new_block
+    
+    def expand_document(self, document: DocumentNode) -> DocumentNode:
+        """
+        展开文档中的所有 inline_script
+        
+        Args:
+            document: 文档节点
+            
+        Returns:
+            展开后的文档节点
+        """
+        new_statements = []
+        
+        for stmt in document.statements:
+            expanded = self.expand_statement(stmt)
+            new_statements.append(expanded)
+        
+        return DocumentNode(new_statements)
 
 
 # 便捷函数
@@ -323,11 +239,14 @@ if __name__ == '__main__':
     import sys
     from pathlib import Path
     
-    # 添加父目录到 sys.path
-    sys.path.insert(0, str(Path(__file__).parent.parent))
+    # 添加 src 目录到 sys.path
+    sys.path.insert(0, str(Path(__file__).parent.parent.parent / 'src'))
+    
+    from synthetipy import parse
+    from synthetipy.ast_nodes import ObjectNode
     
     print("=" * 60)
-    print("测试 Inline Script Resolver")
+    print("测试 Inline Script Resolver (AST 后处理)")
     print("=" * 60)
     
     # 创建解析器
@@ -345,21 +264,51 @@ if __name__ == '__main__':
     
     script = resolver.load_script("jobs/roboticist_add")
     if script:
-        print(f"✓ 成功加载 jobs/roboticist_add")
-        print(f"  语句数: {len(script.statements)}")
+        print(f"成功加载 jobs/roboticist_add")
+        print(f"内容长度: {len(script)} 字符")
+        print(f"前 200 字符:\n{script[:200]}")
     else:
-        print("✗ 加载失败")
+        print("加载失败")
     
-    # 测试参数替换
-    print("\n测试 2: 参数替换")
+    # 测试 AST 展开
+    print("\n测试 2: AST 级别展开")
     print("-" * 60)
     
-    if script:
-        params = {"AMOUNT": "5"}
-        replaced = resolver._replace_parameters(script, params)
-        print(f"✓ 参数替换完成")
-        print(f"  原始语句数: {len(script.statements)}")
-        print(f"  替换后语句数: {len(replaced.statements)}")
+    code = """
+building_test = {
+    cost = { minerals = 400 }
+    inline_script = jobs/roboticist_add
+}
+"""
+    
+    # 解析
+    ast = parse(code)
+    print(f"解析完成，对象数: {len(ast.statements)}")
+    
+    # 展开
+    expanded_ast = resolver.expand_document(ast)
+    print(f"展开完成，对象数: {len(expanded_ast.statements)}")
+    
+    # 检查第一个对象的语句数
+    if expanded_ast.statements:
+        obj = expanded_ast.statements[0]
+        if isinstance(obj, ObjectNode):
+            print(f"第一个对象语句数: {len(obj.body.statements)}")
+            
+            # 检查元数据
+            for i, stmt in enumerate(obj.body.statements[:3]):
+                if hasattr(stmt, '_metadata'):
+                    meta = stmt._metadata
+                    print(f"  语句 {i+1}: 来源={meta.get('source_file')}, 行号={meta.get('source_line')}")
+    
+    # 编译查看结果
+    try:
+        from synthetipy import compile_ast
+        compiled = compile_ast(expanded_ast)
+        print(f"\n编译后代码（前 500 字符）:")
+        print(compiled[:500])
+    except ImportError as e:
+        print(f"\n编译器模块未找到: {e}，跳过编译测试")
     
     print("\n" + "=" * 60)
     print("测试完成")

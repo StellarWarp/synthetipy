@@ -5,11 +5,7 @@ PDXLang Patcher - 语法分析器
 
 from typing import List, Optional, Union
 from .lexer import Token, TokenType
-from .ast_nodes import (
-    ASTNode, DocumentNode, ObjectNode, PropertyNode, BlockNode, ValueNode,
-    ListNode, ConditionNode, ComparisonNode, CommentNode, ConstantDefinitionNode,
-    DirectiveNode, IdentifierExpressionNode, MacroParam
-)
+from .ast_nodes import *
 
 
 # 系统级指令/标记列表
@@ -453,10 +449,8 @@ class Parser:
         
         return condition
     
-    def parse_conditional_param(self) -> 'ConditionalParamNode':
+    def parse_conditional_param(self) -> ConditionalParamNode:
         """解析条件参数块 [[PARAM] ... ]"""
-        from .ast_nodes import ConditionalParamNode
-        
         param_token = self.advance()  # [[PARAM]
         param_value = param_token.value  # 例如 "[[SPIRITUALIST]"
         
@@ -541,7 +535,7 @@ class Parser:
             # 直接使用表达式字符串作为 key
             key = left_node.expression
         elif hasattr(left_node, 'value'):
-            # ValueNode
+            # LiteralNode
             key = left_node.value
         else:
             raise self.error(
@@ -577,6 +571,15 @@ class Parser:
         
         value = self.parse_value()
         
+        # 特殊处理：如果是 inline_script，生成 InlineScriptNode
+        if key == 'inline_script':
+            script_path, params = self._extract_inline_script_info(value)
+            if script_path:
+                inline_script = InlineScriptNode(script_path, params)
+                inline_script.line = left_node.line
+                inline_script.column = left_node.column
+                value = inline_script
+        
         prop = PropertyNode(key, value)
         prop.line = left_node.line
         prop.column = left_node.column
@@ -596,6 +599,50 @@ class Parser:
         }
         return mapping.get(token_type, '=')
     
+    def _extract_inline_script_info(self, value: ASTNode) -> tuple:
+        """Extract script path and parameters from inline_script value
+        
+        Args:
+            value: The value node (either LiteralNode for simple form or BlockNode for complex form)
+            
+        Returns:
+            (script_path, params) tuple
+        """
+        script_path = None
+        params = {}
+        
+        # Simple form: inline_script = jobs/researcher_add
+        if isinstance(value, (LiteralNode, IdentifierExpressionNode)):
+            if isinstance(value, LiteralNode):
+                script_path = value.value
+            else:
+                script_path = value.expression
+        
+        # Complex form: inline_script = { script = ... PARAM = value }
+        elif isinstance(value, BlockNode):
+            for stmt in value.statements:
+                if isinstance(stmt, PropertyNode):
+                    key = stmt.key if isinstance(stmt.key, str) else str(stmt.key)
+                    
+                    if key == 'script':
+                        # Extract script path
+                        if isinstance(stmt.value, LiteralNode):
+                            script_path = stmt.value.value
+                        elif isinstance(stmt.value, IdentifierExpressionNode):
+                            script_path = stmt.value.expression
+                    else:
+                        # Extract parameters
+                        if isinstance(stmt.value, LiteralNode):
+                            params[key] = stmt.value.value
+                        elif isinstance(stmt.value, IdentifierExpressionNode):
+                            params[key] = stmt.value.expression
+                        elif isinstance(stmt.value, BlockNode):
+                            params[key] = stmt.value
+                        else:
+                            params[key] = stmt.value
+        
+        return script_path, params
+    
     def parse_value(self) -> ASTNode:
         """解析值（可能是标量、代码块或列表）"""
         # 负数值: -123 或 -$VAR$
@@ -603,8 +650,8 @@ class Parser:
             minus_token = self.advance()
             # 递归解析后面的值
             inner_value = self.parse_value()
-            # 如果是 ValueNode，将负号添加到值前面
-            if isinstance(inner_value, ValueNode):
+            # 如果是 LiteralNode，将负号添加到值前面
+            if isinstance(inner_value, LiteralNode):
                 inner_value.value = '-' + str(inner_value.value)
                 inner_value.line = minus_token.line
                 inner_value.column = minus_token.column
@@ -628,7 +675,7 @@ class Parser:
         # 数字
         if self.check(TokenType.NUMBER):
             token = self.advance()
-            value = ValueNode(token.value)
+            value = LiteralNode(token.value)
             value.line = token.line
             value.column = token.column
             return value
@@ -636,7 +683,7 @@ class Parser:
         # 字符串
         if self.check(TokenType.STRING):
             token = self.advance()
-            value = ValueNode(token.value, 'string')
+            value = LiteralNode(token.value, 'string')
             value.line = token.line
             value.column = token.column
             return value
@@ -654,7 +701,7 @@ class Parser:
                 raise ParserError("Expected identifier after '@' in constant reference", self.peek())
             
             const_name = '@' + self.advance().value
-            value = ValueNode(const_name, 'constant')
+            value = LiteralNode(const_name, 'constant')
             value.line = at_token.line
             value.column = at_token.column
             return value
@@ -728,7 +775,7 @@ class Parser:
                 # 遇到非表达式 token，停止收集
                 break
         
-        # 如果没有收集到任何 token，返回简单的 ValueNode
+        # 如果没有收集到任何 token，返回简单的 LiteralNode
         if not expression_tokens:
             raise self.error(
                 "Expected identifier in expression",
@@ -779,6 +826,13 @@ class Parser:
         
         # 构建最终的表达式字符串
         full_expression = ''.join(expression_parts)
+        
+        # 检查是否是布尔字面量 yes/no
+        if full_expression.lower() in ('yes', 'no', 'true', 'false'):
+            literal_node = LiteralNode(full_expression)
+            literal_node.line = start_token.line
+            literal_node.column = start_token.column
+            return literal_node
         
         # 创建 IdentifierExpressionNode
         expr_node = IdentifierExpressionNode(full_expression)
@@ -859,8 +913,6 @@ class Parser:
         
         当前实现：保存原始表达式文本，不解析内部结构
         """
-        from .ast_nodes import InlineArithmeticNode
-        
         # 检查是否是转义形式 @\[
         escaped = at_token.value == '@\\'
         
@@ -995,10 +1047,10 @@ class Parser:
             # 解析列表项
             if self.check(TokenType.NUMBER):
                 token = self.advance()
-                items.append(ValueNode(token.value))
+                items.append(LiteralNode(token.value))
             elif self.check(TokenType.STRING):
                 token = self.advance()
-                items.append(ValueNode(token.value, 'string'))
+                items.append(LiteralNode(token.value, 'string'))
             elif self.check(TokenType.IDENTIFIER):
                 # IDENTIFIER 可能是简单值，也可能是复合表达式（如 marauder.15）
                 # 向前看一个 token 来判断
@@ -1010,16 +1062,16 @@ class Parser:
                 else:
                     # 简单标识符
                     token = self.advance()
-                    items.append(ValueNode(token.value))
+                    items.append(LiteralNode(token.value))
             elif self.check(TokenType.AT):
                 # 常量引用 @constant
                 at_token = self.advance()
                 if self.check(TokenType.IDENTIFIER):
                     const_name = '@' + self.advance().value
-                    items.append(ValueNode(const_name, 'constant'))
+                    items.append(LiteralNode(const_name, 'constant'))
                 else:
                     # 单独的 @，也当作值
-                    items.append(ValueNode('@', 'identifier'))
+                    items.append(LiteralNode('@', 'identifier'))
             else:
                 break
         

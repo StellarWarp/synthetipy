@@ -13,7 +13,17 @@ __author__ = 'Estelle'
 # 导出核心类和函数
 from .lexer import Lexer, lex, Token, TokenType
 from .parser import Parser, parse
+from .compiler import Compiler, compile_ast, compile_to_file
 from .inline_script_resolver import InlineScriptResolver, create_resolver
+from .inline_script_utils import (
+    InlineScriptLoader,
+    extract_script_info,
+    replace_parameters,
+    is_inline_script,
+    format_meta_inline_script,
+)
+from .config import Config, get_config
+from . import pdx_constants
 from .ast_nodes import (
     # 节点类
     ASTNode,
@@ -21,7 +31,7 @@ from .ast_nodes import (
     ObjectNode,
     PropertyNode,
     BlockNode,
-    ValueNode,
+    LiteralNode,
     ListNode,
     ConditionNode,
     ComparisonNode,
@@ -31,6 +41,7 @@ from .ast_nodes import (
     DirectiveNode,
     ConstantNode,
     ConstantDefinitionNode,
+    IdentifierExpressionNode,
     ScriptedValueCallNode,
     MacroParameterNode,
     MacroIdentifierNode,
@@ -61,6 +72,11 @@ __all__ = [
     'Parser',
     'parse',
     
+    # 代码生成/编译
+    'Compiler',
+    'compile_ast',
+    'compile_to_file',
+    
     # Inline Script 解析
     'InlineScriptResolver',
     'create_resolver',
@@ -71,7 +87,7 @@ __all__ = [
     'ObjectNode',
     'PropertyNode',
     'BlockNode',
-    'ValueNode',
+    'LiteralNode',
     'ListNode',
     'ConditionNode',
     'ComparisonNode',
@@ -81,6 +97,7 @@ __all__ = [
     'DirectiveNode',
     'ConstantNode',
     'ConstantDefinitionNode',
+    'IdentifierExpressionNode',
     'ScriptedValueCallNode',
     'MacroParameterNode',
     'MacroIdentifierNode',
