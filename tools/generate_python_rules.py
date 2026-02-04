@@ -122,6 +122,9 @@ class PythonRulesGenerator:
         self.localizations = self._load_json('localizations.json')
         self.special_blocks = self._load_json('special_blocks.json')
         
+        # 跟踪生成的变量名
+        self.modifier_vars = []
+        
         # 分析共享和独占的标识符
         self.analyze_shared_identifiers()
     
@@ -137,14 +140,17 @@ class PythonRulesGenerator:
         """分析 trigger 和 effect 之间共享的标识符"""
         trigger_names = set(self.triggers.keys())
         effect_names = set(self.effects.keys())
+        scope_names = set(self.scopes.keys())
         
         self.shared_identifiers = trigger_names & effect_names
-        self.trigger_exclusive = trigger_names - effect_names
-        self.effect_exclusive = effect_names - trigger_names
+        self.trigger_identifiers_exclusive = trigger_names - effect_names
+        self.effect_identifiers_exclusive = effect_names - trigger_names
+        self.scopes_identifiers = scope_names
         
         print(f"共享标识符: {len(self.shared_identifiers)} 个")
-        print(f"Trigger 独占: {len(self.trigger_exclusive)} 个")
-        print(f"Effect 独占: {len(self.effect_exclusive)} 个")
+        print(f"Trigger 独占: {len(self.trigger_identifiers_exclusive)} 个")
+        print(f"Effect 独占: {len(self.effect_identifiers_exclusive)} 个")
+        print(f"Scopes: {len(self.scopes_identifiers)} 个")
     
     def generate_all(self, output_dir: Path):
         """生成所有 Python 规则文件"""
@@ -166,10 +172,7 @@ class PythonRulesGenerator:
         # 5. 生成 modifier 规则
         self._generate_modifier_rules(output_dir)
         
-        # 6. 生成特殊块规则
-        self._generate_special_blocks_rules(output_dir)
-        
-        # 7. 生成统一的 __init__.py
+        # 6. 生成统一的 __init__.py
         self._generate_init_file(output_dir)
         
         print(f"\n✓ 所有规则文件已生成到: {output_dir}")
@@ -185,13 +188,16 @@ class PythonRulesGenerator:
             '"""',
             '',
             '# 共享标识符（同时存在于 trigger 和 effect 中）',
-            f'SHARED_IDENTIFIERS = {self._format_set(self.shared_identifiers)}',
+            f'SHARED_IDENTIFIERS = frozenset({self._format_set(self.shared_identifiers)})',
             '',
             '# Trigger 独占标识符',
-            f'TRIGGER_EXCLUSIVE = {self._format_set(self.trigger_exclusive)}',
+            f'TRIGGER_IDENTIFIERS_EXCLUSIVE = frozenset({self._format_set(self.trigger_identifiers_exclusive)})',
             '',
             '# Effect 独占标识符',
-            f'EFFECT_EXCLUSIVE = {self._format_set(self.effect_exclusive)}',
+            f'EFFECT_IDENTIFIERS_EXCLUSIVE = frozenset({self._format_set(self.effect_identifiers_exclusive)})',
+            '',
+            '# 所有 Scopes',
+            f'SCOPES_IDENTIFIERS = frozenset({self._format_set(self.scopes_identifiers)})',
             '',
         ]
         
@@ -210,47 +216,27 @@ class PythonRulesGenerator:
             '',
         ]
         
-        # 按类型分组
-        by_type = {}
-        for name, info in self.triggers.items():
-            t = info['type']
-            if t not in by_type:
-                by_type[t] = {}
-            by_type[t][name] = info
-        
-        # 生成每个类型的字典
-        for type_name, triggers in sorted(by_type.items()):
-            var_name = f'TRIGGERS_{type_name.upper()}'
-            lines.append(f'# {type_name.upper()} 类型的 triggers')
-            lines.append(f'{var_name} = {{')
-            
-            for name, info in sorted(triggers.items()):
-                # 解析 usage
-                parsed_usage = UsageParser.parse_usage(info['usage'], name)
-                
-                lines.append(f'    {repr(name)}: {{')
-                lines.append(f'        "description": {repr(info["description"])},')
-                lines.append(f'        "scopes": {info["scopes"]},')
-                lines.append(f'        "type": {repr(info["type"])},')
-                lines.append(f'        "usage_format": {repr(parsed_usage["format"])},')
-                if parsed_usage.get('params'):
-                    lines.append(f'        "params": {parsed_usage["params"]},')
-                if parsed_usage.get('alternatives'):
-                    lines.append(f'        "alternatives": [')
-                    for alt in parsed_usage['alternatives']:
-                        lines.append(f'            {alt},')
-                    lines.append(f'        ],')
-                lines.append(f'    }},')
-            
-            lines.append('}')
-            lines.append('')
-        
-        # 生成汇总字典
-        lines.append('# 所有 triggers 的汇总')
+        # 生成 ALL_TRIGGERS
+        lines.append('# 所有 triggers')
         lines.append('ALL_TRIGGERS = {')
-        for type_name in sorted(by_type.keys()):
-            var_name = f'TRIGGERS_{type_name.upper()}'
-            lines.append(f'    **{var_name},')
+        
+        for name, info in sorted(self.triggers.items()):
+            # 解析 usage
+            parsed_usage = UsageParser.parse_usage(info['usage'], name)
+            
+            lines.append(f'    {repr(name)}: {{')
+            lines.append(f'        "description": {repr(info["description"])},')
+            lines.append(f'        "scopes": {info["scopes"]},')
+            lines.append(f'        "usage_format": {repr(parsed_usage["format"])},')
+            if parsed_usage.get('params'):
+                lines.append(f'        "params": {parsed_usage["params"]},')
+            if parsed_usage.get('alternatives'):
+                lines.append(f'        "alternatives": [')
+                for alt in parsed_usage['alternatives']:
+                    lines.append(f'            {alt},')
+                lines.append(f'        ],')
+            lines.append(f'    }},')
+        
         lines.append('}')
         lines.append('')
         
@@ -269,46 +255,26 @@ class PythonRulesGenerator:
             '',
         ]
         
-        # 按类型分组
-        by_type = {}
-        for name, info in self.effects.items():
-            t = info['type']
-            if t not in by_type:
-                by_type[t] = {}
-            by_type[t][name] = info
-        
-        # 生成每个类型的字典
-        for type_name, effects in sorted(by_type.items()):
-            var_name = f'EFFECTS_{type_name.upper()}'
-            lines.append(f'# {type_name.upper()} 类型的 effects')
-            lines.append(f'{var_name} = {{')
-            
-            for name, info in sorted(effects.items()):
-                parsed_usage = UsageParser.parse_usage(info['usage'], name)
-                
-                lines.append(f'    {repr(name)}: {{')
-                lines.append(f'        "description": {repr(info["description"])},')
-                lines.append(f'        "scopes": {info["scopes"]},')
-                lines.append(f'        "type": {repr(info["type"])},')
-                lines.append(f'        "usage_format": {repr(parsed_usage["format"])},')
-                if parsed_usage.get('params'):
-                    lines.append(f'        "params": {parsed_usage["params"]},')
-                if parsed_usage.get('alternatives'):
-                    lines.append(f'        "alternatives": [')
-                    for alt in parsed_usage['alternatives']:
-                        lines.append(f'            {alt},')
-                    lines.append(f'        ],')
-                lines.append(f'    }},')
-            
-            lines.append('}')
-            lines.append('')
-        
-        # 生成汇总字典
-        lines.append('# 所有 effects 的汇总')
+        # 生成 ALL_EFFECTS
+        lines.append('# 所有 effects')
         lines.append('ALL_EFFECTS = {')
-        for type_name in sorted(by_type.keys()):
-            var_name = f'EFFECTS_{type_name.upper()}'
-            lines.append(f'    **{var_name},')
+        
+        for name, info in sorted(self.effects.items()):
+            parsed_usage = UsageParser.parse_usage(info['usage'], name)
+            
+            lines.append(f'    {repr(name)}: {{')
+            lines.append(f'        "description": {repr(info["description"])},')
+            lines.append(f'        "scopes": {info["scopes"]},')
+            lines.append(f'        "usage_format": {repr(parsed_usage["format"])},')
+            if parsed_usage.get('params'):
+                lines.append(f'        "params": {parsed_usage["params"]},')
+            if parsed_usage.get('alternatives'):
+                lines.append(f'        "alternatives": [')
+                for alt in parsed_usage['alternatives']:
+                    lines.append(f'            {alt},')
+                lines.append(f'        ],')
+            lines.append(f'    }},')
+        
         lines.append('}')
         lines.append('')
         
@@ -361,6 +327,7 @@ class PythonRulesGenerator:
         # 生成类别集合
         for category, modifiers in sorted(by_category.items()):
             var_name = f'MODIFIERS_{self._sanitize_name(category).upper()}'
+            self.modifier_vars.append(var_name)
             lines.append(f'# {category}')
             lines.append(f'{var_name} = {self._format_set(set(modifiers))}')
             lines.append('')
@@ -397,8 +364,6 @@ class PythonRulesGenerator:
             lines.append(f'{var_name} = {self._format_set(set(blocks))}')
             lines.append('')
         
-        self._write_file(output_dir / 'special_blocks.py', lines)
-    
     def _generate_init_file(self, output_dir: Path):
         """生成 __init__.py"""
         lines = [
@@ -408,12 +373,18 @@ class PythonRulesGenerator:
             '此模块包含从游戏官方文档自动生成的规则',
             '"""',
             '',
-            'from .identifiers import *',
-            'from .trigger_rules import *',
-            'from .effect_rules import *',
-            'from .scope_rules import *',
-            'from .modifier_rules import *',
-            'from .special_blocks import *',
+            '# 标识符分类',
+            'from .identifiers import SHARED_IDENTIFIERS, TRIGGER_IDENTIFIERS_EXCLUSIVE, EFFECT_IDENTIFIERS_EXCLUSIVE, SCOPES_IDENTIFIERS',
+            '',
+            '# Trigger 和 Effect 规则',
+            'from .trigger_rules import ALL_TRIGGERS',
+            'from .effect_rules import ALL_EFFECTS',
+            '',
+            '# Scope 规则',
+            'from .scope_rules import SCOPES',
+            '',
+            '# Modifier 规则',
+            f'from .modifier_rules import MODIFIER_CATEGORIES, ALL_MODIFIERS, {", ".join(self.modifier_vars)}',
             '',
         ]
         
@@ -459,7 +430,7 @@ class PythonRulesGenerator:
 def main():
     """主函数"""
     rules_dir = Path(__file__).parent.parent / 'codegen_rules'
-    output_dir = Path(__file__).parent.parent / 'src' / 'synthetipy' / 'game_rules'
+    output_dir = Path(__file__).parent.parent / 'src' / 'synthetipy' / 'game_definitions'
     
     if not rules_dir.exists():
         print(f"❌ 规则目录不存在: {rules_dir}")
@@ -476,9 +447,8 @@ def main():
     print("✓ 完成！")
     print()
     print("生成的模块可以这样使用:")
-    print("  from synthetipy.game_rules import ALL_TRIGGERS, ALL_EFFECTS")
-    print("  from synthetipy.game_rules import SHARED_IDENTIFIERS")
-    print("  from synthetipy.game_rules import CONTROL_FLOW_BLOCKS")
+    print("  from synthetipy.game_definitions import ALL_TRIGGERS, ALL_EFFECTS")
+    print("  from synthetipy.game_definitions import SHARED_IDENTIFIERS, TRIGGER_IDENTIFIERS_EXCLUSIVE")
 
 
 if __name__ == '__main__':

@@ -8,6 +8,7 @@ from typing import Dict, List, Any, Optional
 from ...ast_nodes import ASTNode, BlockNode, PropertyNode, LiteralNode
 from ...pdx_constants import BLOCK_EFFECTS
 from ..runtime_deps import format_identifier
+from ..formatters import Formatter
 
 
 # 检查 InlineScriptNode 是否可用
@@ -27,6 +28,8 @@ class EffectBlockGenerator:
     def __init__(self, parent_generator):
         self.parent = parent_generator
         self.context = parent_generator.context
+        # 使用集中 Formatter，并在需要时传入父生成器的 parameters 字典
+        self.parameters = parent_generator.parameters if hasattr(parent_generator, 'parameters') else {}
     
     def is_block_effect(self, key: str) -> bool:
         """判断是否是块效果"""
@@ -50,16 +53,18 @@ class EffectBlockGenerator:
         
         for stmt in value.statements:
             if isinstance(stmt, PropertyNode):
-                k = stmt.key if isinstance(stmt.key, str) else str(stmt.key)
+                k = str(stmt.key)
                 v = self._extract_value(stmt.value)
                 kwargs[k] = v
         
         # 构建方法调用（所有参数作为关键字参数）
         if kwargs:
-            args_str = ", ".join(f"{k}={self._format_value(v)}" for k, v in kwargs.items())
-            self.parent._add_line(f"{self.context.current_scope_var}.{key}({args_str})")
+            args_str = ", ".join(f"{k}={Formatter.format_literal_any(v, self.parameters)}" for k, v in kwargs.items())
+            from ...pdx_constants import safe_identifier
+            self.parent._add_line(f"{self.context.current_scope_var}.{safe_identifier(key)}({args_str})")
         else:
-            self.parent._add_line(f"{self.context.current_scope_var}.{key}()")
+            from ...pdx_constants import safe_identifier
+            self.parent._add_line(f"{self.context.current_scope_var}.{safe_identifier(key)}()")
         
         return True
     
@@ -71,15 +76,17 @@ class EffectBlockGenerator:
         kwargs = {}
         for stmt in value.statements:
             if isinstance(stmt, PropertyNode):
-                k = stmt.key if isinstance(stmt.key, str) else str(stmt.key)
+                k = str(stmt.key)
                 v = self._extract_value(stmt.value)
                 kwargs[k] = v
         
         if kwargs:
-            args_str = ", ".join(f"{k}={self._format_value(v)}" for k, v in kwargs.items())
-            self.parent._add_line(f"{self.context.current_scope_var}.{key}({args_str})")
+            args_str = ", ".join(f"{k}={Formatter.format_literal_any(v, self.parameters)}" for k, v in kwargs.items())
+            from ...pdx_constants import safe_identifier
+            self.parent._add_line(f"{self.context.current_scope_var}.{safe_identifier(key)}({args_str})")
         else:
-            self.parent._add_line(f"{self.context.current_scope_var}.{key}()")
+            from ...pdx_constants import safe_identifier
+            self.parent._add_line(f"{self.context.current_scope_var}.{safe_identifier(key)}()")
         
         return True
     
@@ -92,9 +99,10 @@ class EffectBlockGenerator:
         add_minerals = $MINERALS$ -> scope.add_minerals(MINERALS)
         """
         val = self._extract_value(value)
-        formatted_val = self._format_value(val)
+        formatted_val = Formatter.format_literal_any(val, self.parameters)
         
-        self.parent._add_line(f"{self.context.current_scope_var}.{key}({formatted_val})")
+        from ...pdx_constants import safe_identifier
+        self.parent._add_line(f"{self.context.current_scope_var}.{safe_identifier(key)}({formatted_val})")
         return True
     
     def generate_script_call(self, key: str) -> bool:
@@ -103,7 +111,8 @@ class EffectBlockGenerator:
         
         my_scripted_effect = yes -> my_scripted_effect(scope)
         """
-        self.parent._add_line(f"{key}({self.context.current_scope_var})")
+        from ...pdx_constants import safe_identifier
+        self.parent._add_line(f"{safe_identifier(key)}({self.context.current_scope_var})")
         return True
     
     def generate_inline_script(self, value: ASTNode) -> bool:
@@ -132,7 +141,7 @@ class EffectBlockGenerator:
         if script_path is None and isinstance(value, BlockNode):
             for stmt in value.statements:
                 if isinstance(stmt, PropertyNode):
-                    k = stmt.key if isinstance(stmt.key, str) else str(stmt.key)
+                    k = str(stmt.key)
                     v = self._extract_value(stmt.value)
                     
                     if k == 'script':
@@ -147,7 +156,7 @@ class EffectBlockGenerator:
         
         # 生成 meta.inline_script 调用
         if params:
-            params_str = ", ".join(f"{k}={self._format_value(v)}" 
+            params_str = ", ".join(f"{k}={Formatter.format_literal_any(v, self.parameters)}"
                                    for k, v in params.items())
             self.parent._add_line(f"meta.inline_script(script='{script_path}', {params_str})")
         else:
@@ -220,85 +229,8 @@ class EffectBlockGenerator:
                 f"BlockNode 包含 {len(value.statements)} 个语句，"
                 f"不能简单地转换为字符串"
             )
-        elif hasattr(value, 'value'):
-            return str(value.value)
         else:
             from ...codegen.exceptions import UnsupportedFeatureError
             raise UnsupportedFeatureError(
                 f"_extract_value 遇到未处理的节点类型: {type(value).__name__}"
             )
-    
-    def _format_value(self, value: Any) -> str:
-        """
-        格式化值为 Python 代码
-        
-        规则：
-        1. 数字（int/float）→ 不加引号
-        2. 布尔值（bool）→ 不加引号（Python True/False）
-        3. 宏参数（已经是参数名）→ 不加引号
-        4. 游戏标识符、枚举等 → 加引号
-        
-        未来可扩展：
-        - 检查是否可以转换为 Python 引用（如 buildings.xxx）
-        - 目前默认作为字面量处理
-        """
-        # 布尔值
-        if isinstance(value, bool):
-            return str(value)
-        
-        # 数字
-        if isinstance(value, (int, float)):
-            return str(value)
-        
-        # 字符串
-        if isinstance(value, str):
-            # 检查是否是宏参数（由 _extract_value 返回的纯参数名）
-            if hasattr(self.parent, 'parameters') and value in self.parent.parameters:
-                return value  # 宏参数，不加引号
-            
-            # 检查是否是数字字符串
-            try:
-                int(value)
-                return value  # 数字字符串，不加引号
-            except ValueError:
-                try:
-                    float(value)
-                    return value  # 浮点数字符串，不加引号
-                except ValueError:
-                    pass
-            
-            # 检查是否是布尔字符串
-            if value in ('yes', 'no'):
-                return 'True' if value == 'yes' else 'False'
-            
-            # 尝试解析为游戏引用（预留接口）
-            resolved_ref = self._try_resolve_reference(value)
-            if resolved_ref:
-                return resolved_ref
-            
-            # 默认：作为字符串字面量
-            return repr(value)
-        
-        # 其他类型
-        return repr(value)
-    
-    def _try_resolve_reference(self, identifier: str) -> Optional[str]:
-        """
-        尝试将游戏标识符解析为 Python 引用
-        
-        例如：'building_capital' -> buildings.building_capital
-        
-        当前实现：总是返回 None（默认作为字面量）
-        未来可以扩展为查询游戏数据库并转换为引用
-        
-        Args:
-            identifier: 游戏标识符（如 'building_xxx', 'tech_xxx'）
-        
-        Returns:
-            Python 引用字符串，或 None（表示应该作为字面量）
-        """
-        # TODO: 实现引用解析
-        # - 检查是否匹配已知模式（如 building_*, tech_*, modifier_*）
-        # - 查询游戏数据库验证引用存在
-        # - 返回对应的 Python 引用（如 'buildings.xxx'）
-        return None

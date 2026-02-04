@@ -11,7 +11,7 @@ __version__ = '0.1.0-alpha'
 __author__ = 'Estelle'
 
 # 导出核心类和函数
-from .lexer import Lexer, lex, Token, TokenType
+from .parsing.lexer import Lexer, lex, Token, TokenType
 from .parser import Parser, parse
 from .compiler import Compiler, compile_ast, compile_to_file
 from .inline_script_resolver import InlineScriptResolver, create_resolver
@@ -42,20 +42,15 @@ from .ast_nodes import (
     ConstantNode,
     ConstantDefinitionNode,
     IdentifierExpressionNode,
-    ScriptedValueCallNode,
-    MacroParameterNode,
-    MacroIdentifierNode,
     InlineArithmeticNode,
+    # 新增节点
+    ScopeNode,
     
-    # 访问者
-    ASTVisitor,
-    ASTTransformer,
-    
-    # 辅助函数
-    create_property,
-    dict_to_block,
-    block_to_dict,
 )
+
+# 访问者类（在 ast_utils.py 中）
+from .ast_utils import ASTVisitor, ASTTransformer, create_property, dict_to_block, block_to_dict
+
 
 __all__ = [
     # 版本信息
@@ -98,9 +93,6 @@ __all__ = [
     'ConstantNode',
     'ConstantDefinitionNode',
     'IdentifierExpressionNode',
-    'ScriptedValueCallNode',
-    'MacroParameterNode',
-    'MacroIdentifierNode',
     'InlineArithmeticNode',
     
     # 访问者模式
@@ -126,17 +118,17 @@ __all__ = [
 def get_info():
     """获取包信息"""
     return {
-        'name': 'pdxlang-patcher',
+        'name': 'SynthetiPy',
         'version': __version__,
         'author': __author__,
         'description': 'Paradox 脚本语言的 Python 工具链',
-        'license': 'MIT',
+        'license': 'GNU LGPL v3',
         'status': 'alpha - 仅实现了词法分析器和 AST 定义',
     }
 
 
 if __name__ == '__main__':
-    print("PDXLang Patcher")
+    print("SynthetiPy")
     print("=" * 50)
     info = get_info()
     for key, value in info.items():

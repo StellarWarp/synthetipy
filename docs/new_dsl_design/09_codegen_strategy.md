@@ -369,7 +369,7 @@ class PythonCodeGenerator:
                 self.generate_nested_class(key, value)
         else:
             # 简单属性
-            self.add_line(f"{key} = {self.format_value(value)}")
+            self.add_line(f"{key} = {self.format_literal(value)}")
     
     def generate_trigger_method(self, name: str, block: BlockNode):
         """生成 trigger 方法"""
@@ -421,7 +421,7 @@ class PythonCodeGenerator:
     def dedent(self):
         self.indent_level -= 1
     
-    def format_value(self, value: ASTNode) -> str:
+    def format_literal(self, value: ASTNode) -> str:
         """格式化值为 Python 字面量"""
         if isinstance(value, LiteralNode):
             if value.value_type == 'string':

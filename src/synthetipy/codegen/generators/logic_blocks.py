@@ -35,7 +35,7 @@ class LogicBlockGenerator:
         """
         from .expression_builder import ExpressionBuilder
         
-        expr_builder = ExpressionBuilder(self.parent)
+        expr_builder = ExpressionBuilder(self.parent, self.parent.value_formatter)
         expressions = []
         
         for stmt in block.statements:
@@ -44,7 +44,7 @@ class LogicBlockGenerator:
                 expressions.append(expr)
         
         if not expressions:
-            return "True"
+            raise ValueError(f"Logic block with operator {operator} has no valid expressions")
         
         # 单个表达式时，AND/OR 可以直接返回
         if len(expressions) == 1 and operator in ('AND', 'OR'):

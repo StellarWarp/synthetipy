@@ -112,9 +112,9 @@ if k in RESOURCE_KEYS:
     args.append(str(v))
 ```
 
-**新标准** (`effect_blocks.py._format_value()`):
+**新标准** (`effect_blocks.py._format_literal()`):
 ```python
-def _format_value(self, value: Any) -> str:
+def _format_literal(self, value: Any) -> str:
     """只根据值类型判断是否加引号"""
     if isinstance(value, bool):
         return str(value)           # True/False 不加引号
@@ -168,7 +168,7 @@ raise UnsupportedFeatureError(
 
 3. **Effect 生成器重构**
    - 删除硬编码规则（PRIMARY_KEYS/RESOURCE_KEYS）
-   - 统一值格式化逻辑（_format_value）
+   - 统一值格式化逻辑（_format_literal）
    - 所有测试通过（test_effect_generator.py）
 
 ### 待修复 ⚠️
@@ -205,7 +205,7 @@ raise UnsupportedFeatureError(
    - `[[!SOME_PARAM]]` → `if not SOME_PARAM:`
 
 8. **Trigger/Value 生成器统一**
-   - 迁移到 `_format_value()` 方法
+   - 迁移到 `_format_literal()` 方法
    - 与 Effect 生成器保持一致
 
 #### P2 - 增强功能（提升质量）
@@ -293,7 +293,7 @@ python tools/generate_python_rules.py
 **核心方法**:
 - `generate_simple_effect(stmt)` - 简单赋值型 effect
 - `generate_block_effect(stmt)` - 带参数块的 effect
-- `_format_value(value)` - 统一值格式化（🔥 重要）
+- `_format_literal(value)` - 统一值格式化（🔥 重要）
 - `_try_resolve_reference(identifier)` - 引用解析（预留接口）
 
 **最近修改**:
@@ -415,8 +415,8 @@ EFFECTS_BLOCK = {
 
 **正确做法**: 修改 `tools/parse_game_docs.py` 或 `tools/generate_python_rules.py`，然后重新生成。
 
-### 2. 值格式化必须使用 `_format_value()`
-不要手动判断是否加引号，统一使用 `_format_value()` 方法。
+### 2. 值格式化必须使用 `_format_literal()`
+不要手动判断是否加引号，统一使用 `_format_literal()` 方法。
 
 **错误**:
 ```python
@@ -428,7 +428,7 @@ else:
 
 **正确**:
 ```python
-formatted = self._format_value(v)  # ✅ 统一接口
+formatted = self._format_literal(v)  # ✅ 统一接口
 code = f"{k}={formatted}"
 ```
 
@@ -587,7 +587,7 @@ python -c "from src.synthetipy.game_rules import EFFECTS_BLOCK; print(EFFECTS_BL
 ### 第 4-5 天：深入代码生成器
 1. 研究 `effect_blocks.py` 的实现（已重构，代码质量高）
 2. 对比 `trigger_blocks.py` 和 `value_blocks.py`（待统一）
-3. 理解 `_format_value()` 的设计理念
+3. 理解 `_format_literal()` 的设计理念
 
 ### 第 6-7 天：修复第一个 Bug
 1. 选择 P0 任务（建议从 If/Else 开始）
@@ -610,7 +610,7 @@ python -c "from src.synthetipy.game_rules import EFFECTS_BLOCK; print(EFFECTS_BL
 - [ ] 能正确转换至少 100 个真实游戏文件
 
 ### 代码质量验收
-- [ ] 所有生成器使用统一的 `_format_value()` 方法
+- [ ] 所有生成器使用统一的 `_format_literal()` 方法
 - [ ] 不再有硬编码的游戏规则
 - [ ] 占位符全部替换为异常
 

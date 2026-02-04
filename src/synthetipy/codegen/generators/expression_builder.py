@@ -6,14 +6,18 @@
 
 from typing import Optional, Tuple
 from ...ast_nodes import *
-
-
+from ...pdx_constants import COMPARISON_OPS,LOGIC_OPERATORS, is_trigger_identifier
+from ...pdx_constants import safe_identifier
+from ..formatters import Formatter
 class ExpressionBuilder:
     """表达式构建器 - 核心转换逻辑"""
     
-    def __init__(self, parent_generator):
+    def __init__(self, parent_generator, value_formatter=None):
         self.parent = parent_generator
         self.context = parent_generator.context
+        # ScopeTranslator: centralized scope handling
+        from .scope_translator import ScopeTranslator
+        self.scope_translator = ScopeTranslator(parent_generator)
     
     def block_to_expression(self, block: BlockNode) -> Optional[str]:
         """
@@ -88,7 +92,8 @@ class ExpressionBuilder:
         op = self.parent.COMPARISON_OPS.get(comp.operator, comp.operator)
         right = self._value_to_python(comp.right)
         
-        return f"{self.context.current_scope_var}.{left} {op} {right}"
+        
+        return f"{self.context.current_scope_var}.{safe_identifier(left)} {op} {right}"
     
     def _property_to_expression(self, prop: PropertyNode) -> Optional[str]:
         """
@@ -103,11 +108,11 @@ class ExpressionBuilder:
         6. free_district_slots = 0 -> scope.free_district_slots == 0 (数值比较)
         7. 特殊调用
         """
-        key = prop.key if isinstance(prop.key, str) else str(prop.key)
+        key = str(prop.key)
         value = prop.value
         
         # 逻辑块
-        if key in self.parent.LOGIC_OPERATORS:
+        if key in LOGIC_OPERATORS:
             if isinstance(value, BlockNode):
                 from .logic_blocks import LogicBlockGenerator
                 logic_gen = LogicBlockGenerator(self.parent)
@@ -120,24 +125,21 @@ class ExpressionBuilder:
         if special_handler.is_special_call(key):
             return special_handler.handle_special_call(key, value)
         
-        # 作用域切换 (简单形式)
-        if key in {'owner', 'capital', 'overlord', 'ruler', 'planet', 'from', 'root', 'prev'}:
-            if isinstance(value, BlockNode):
-                # 嵌套块：owner = { is_ai = yes }
-                # 保存当前作用域，切换到新作用域
-                old_scope = self.context.current_scope_var
-                self.context.current_scope_var = f"{old_scope}.{key}"
-                
-                # 递归处理嵌套块
-                nested_expr = self.block_to_expression(value)
-                
-                # 恢复作用域
-                self.context.current_scope_var = old_scope
-                
-                return nested_expr
+        # 作用域切换 - 使用is_scope_lhs判断PropertyNode.key是否为scope表达式
+        if self.scope_translator.is_scope_lhs(prop.key) and isinstance(value, BlockNode):
+            # 使用 ScopeTranslator 进入作用域（生成 var = scope.access）因为返回的表达式延时插入，没有问题
+            scope_var = self.scope_translator.enter_scope_block(key, dotted_expr=True)
+
+            # 递归处理嵌套块
+            nested_expr = self.block_to_expression(value)
+
+            # 退出作用域
+            self.scope_translator.exit_scope_block()
+
+            return nested_expr
         
         # 方法调用
-        if self.parent._is_method_call(key):
+        if is_trigger_identifier(key):
             return self._method_call_to_expression(key, value)
         
         # 属性访问 (布尔条件)
@@ -146,49 +148,85 @@ class ExpressionBuilder:
                 # is_ai = yes -> scope.is_ai()
                 # is_gestalt = no -> not scope.is_gestalt()
                 if value.value:
-                    return f"{self.context.current_scope_var}.{key}()"
+                    
+                    return f"{self.context.current_scope_var}.{safe_identifier(key)}()"
                 else:
-                    return f"not {self.context.current_scope_var}.{key}()"
+                    
+                    return f"not {self.context.current_scope_var}.{safe_identifier(key)}()"
             elif value.value_type in ('int', 'float'):
                 # 数值比较：free_district_slots = 0 -> scope.free_district_slots == 0
-                return f"{self.context.current_scope_var}.{key} == {value.value}"
+                
+                return f"{self.context.current_scope_var}.{safe_identifier(key)} == {value.value}"
         
         # IdentifierExpressionNode 处理 yes/no
         if hasattr(value, 'expression'):
             expr = value.expression
             if expr == 'yes':
-                return f"{self.context.current_scope_var}.{key}()"
+                
+                return f"{self.context.current_scope_var}.{safe_identifier(key)}()"
             elif expr == 'no':
-                return f"not {self.context.current_scope_var}.{key}()"
+                
+                return f"not {self.context.current_scope_var}.{safe_identifier(key)}()"
             else:
                 # 其他标识符作为参数
-                return f"{self.context.current_scope_var}.{key}('{expr}')"
+                
+                return f"{self.context.current_scope_var}.{safe_identifier(key)}('{expr}')"
         
         return None
     
-    def _method_call_to_expression(self, method: str, value: ASTNode) -> str:
+    def _method_call_to_expression(self, node:PropertyNode) -> str:
         """
         方法调用转换
+        - inbuilt trigger methods:
+        [scope].has_technology = tech_name -> scope.[scope].has_technology('tech_name')
+        [scope].has_planet_flag = flag_name -> scope.[scope].has_planet_flag('flag_name')
+        [scope].is_gestalt = no -> not scope.[scope].is_gestalt()
+        [scope].free_district_slots = 0 -> scope.[scope].free_district_slots == 0 (属性比较)
+        [scope].free_district_slots > 0 -> scope.[scope].free_district_slots > 0 (属性比较)
+        [scope].free_jobs_of_type = { category = ruler value > 0 } -> scope.[scope].free_jobs_of_type(category='ruler') > 0
+        [scope].check_variable_arithmetic = { variable = var_name value > 10 } -> scope.[scope].check_variable_arithmetic(variable='var_name') > 10
         
-        has_technology = tech_name -> scope.has_technology('tech_name')
-        has_planet_flag = flag_name -> scope.has_planet_flag('flag_name')
-        free_jobs_of_type = { category = ruler value > 0 } -> scope.free_jobs_of_type(category='ruler') > 0
-        is_gestalt = no -> not scope.is_gestalt()
-        free_district_slots = 0 -> scope.free_district_slots == 0 (属性比较)
+        - inbuilt effect methods:
+        [scope].some_inbuilt_effect = yes -> scope.some_inbuilt_effect()
+        note: some_inbuilt_effect = no is not valid
+        [scope].set_planet_flag = flag_name -> scope.set_planet_flag('flag_name')
+        [scope].add_modifier = modifier_name -> scope.add_modifier('modifier_name')
+        
+        - script trigger calls:
+        [scope].trigger_name = yes -> trigger_name(scope.[scope])
+        [scope].trigger_name = no -> not trigger_name(scope.[scope])
+        [scope].trigger_name = {
+            category = x years = 10
+        } -> trigger_name(scope.[scope], category='x', years=10)
+        
+        - script effect calls:
+        [scope].effect_name = yes -> effect_name(scope.[scope])
+        note: [scope].effect_name = no is not valid
+        [scope].effect_name = {
+            category = x years = 10
+        } -> effect_name(scope.[scope], category='x', years=10)
         """
+        key: IdentifierExpressionNode = node.key
+        value: ASTNode = node.value
+        identifier_node = key.identifier
+        assert identifier_node.scope_binding is None, "Only unbound identifiers are supported here"
+        identifier = identifier_node.name
+        access = Formatter.scope_to_access(key.scope, self.context.current_scope_var)
         if isinstance(value, LiteralNode):
             # 布尔值特殊处理：is_gestalt = no -> not scope.is_gestalt()
-            if value.value_type == 'bool':
+            if value.value_type == 'bool':   
                 if value.value:
-                    return f"{self.context.current_scope_var}.{method}()"
+                    return f"{access}.{safe_identifier(key)}()"
                 else:
-                    return f"not {self.context.current_scope_var}.{method}()"
+                    return f"not {access}.{safe_identifier(key)}()"
             # 数值作为相等比较：free_district_slots = 0 -> scope.free_district_slots == 0
             elif value.value_type in ('int', 'float'):
-                return f"{self.context.current_scope_var}.{method} == {value.value}"
+                
+                return f"{access}.{safe_identifier(key)} == {value.value}"
             # 其他类型作为参数传递
             arg = self._literal_to_python(value)
-            return f"{self.context.current_scope_var}.{method}({arg})"
+            
+            return f"{access}.{safe_identifier(key)}({arg})"
         
         elif isinstance(value, BlockNode):
             # 复杂参数块
@@ -197,9 +235,9 @@ class ExpressionBuilder:
             # 构建方法调用
             if args:
                 args_str = ", ".join(f"{k}={v}" for k, v in args.items())
-                method_call = f"{self.context.current_scope_var}.{method}({args_str})"
+                method_call = f"{access}.{safe_identifier(key)}({args_str})"
             else:
-                method_call = f"{self.context.current_scope_var}.{method}()"
+                method_call = f"{access}.{safe_identifier(key)}()"
             
             # 如果有比较运算，添加比较
             if comparison:
@@ -207,17 +245,13 @@ class ExpressionBuilder:
             
             return method_call
         
-        # IdentifierExpressionNode 处理：标识符作为参数
-        elif hasattr(value, 'expression'):
-            expr = value.expression
-            if expr == 'yes':
-                return f"{self.context.current_scope_var}.{method}()"
-            elif expr == 'no':
-                return f"not {self.context.current_scope_var}.{method}()"
-            else:
-                return f"{self.context.current_scope_var}.{method}('{expr}')"
+        # IdentifierExpressionNode: argument assignment
+        elif isinstance(value, IdentifierExpressionNode):
+            expr = Formatter.identifier_to_call(value, self.context.current_scope_var)
+            return f"{key} = {expr}"
         
-        return f"{self.context.current_scope_var}.{method}()"
+        
+        return f"{access}.{safe_identifier(key)}()"
     
     def _extract_method_args_and_comparison(self, block: BlockNode) -> Tuple[dict, Optional[str]]:
         """
@@ -231,7 +265,7 @@ class ExpressionBuilder:
         
         for stmt in block.statements:
             if isinstance(stmt, PropertyNode):
-                key = stmt.key if isinstance(stmt.key, str) else str(stmt.key)
+                key = str(stmt.key)
                 
                 # 跳过 value 键（通常是比较的一部分）
                 if key != 'value':
@@ -259,12 +293,14 @@ class ExpressionBuilder:
             # 检查是否是简单宏参数
             if expr.startswith('$') and expr.endswith('$') and expr.count('$') == 2:
                 param_name = expr[1:-1].split('|')[0]
-                # 访问父生成器的参数字典
+                # 访问父生成器的参数字典 - 直接将参数名作为引用（不再使用 is_simple）
                 if hasattr(self.parent, 'parameters') and param_name in self.parent.parameters:
-                    if self.parent.parameters[param_name].is_simple:
-                        return param_name  # 直接返回参数名
+                    return param_name  # 直接返回参数名
             return f"'{expr}'"
-        return "None"
+        from ..exceptions import UnsupportedFeatureError
+        raise UnsupportedFeatureError(
+            f"Cannot convert value node of type {type(value).__name__} to python expression"
+        )
     
     def _literal_to_python(self, lit: LiteralNode) -> str:
         """字面量转 Python"""
@@ -279,12 +315,13 @@ class ExpressionBuilder:
             val = lit.value
             if isinstance(val, str) and val.startswith('$') and val.endswith('$') and val.count('$') == 2:
                 param_name = val[1:-1].split('|')[0]
-                # 访问父生成器的参数字典
+                # 访问父生成器的参数字典 - 直接将参数名作为引用
                 if hasattr(self.parent, 'parameters') and param_name in self.parent.parameters:
-                    if self.parent.parameters[param_name].is_simple:
-                        return param_name  # 直接返回参数名
-            # 使用运行时依赖的格式化函数
-            return self.parent._format_literal(lit)
+                    return param_name  # 直接返回参数名
+            # 使用集中 Formatter（支持 AST 与宏参数）
+            from ..formatters import Formatter
+            params = self.parent.parameters if hasattr(self.parent, 'parameters') else None
+            return Formatter.format_literal_any(lit, params)
         elif lit.value_type == 'constant':
             # @constant_name
             return f"'{lit.value}'"

@@ -25,15 +25,6 @@ class GameDocParser:
         self.scopes: Dict[str, Dict] = {}
         self.modifiers: Dict[str, List[str]] = {}  # modifier -> categories
         self.localizations: Dict[str, Dict] = {}   # scope -> {promotions, properties}
-        
-        # 特殊块分类
-        self.special_blocks = {
-            'control_flow': set(),      # if/else_if/else/switch
-            'hidden': set(),             # hidden_trigger/hidden_effect
-            'random': set(),             # random_list/locked_random_list
-            'scope_change': set(),       # owner/fleet/planet 等
-            'wrapper': set(),            # custom_tooltip 等
-        }
     
     def parse_all(self):
         """解析所有文档"""
@@ -42,7 +33,6 @@ class GameDocParser:
         self.parse_scopes()
         self.parse_modifiers()
         self.parse_localizations()
-        self.classify_special_blocks()
     
     def parse_triggers(self):
         """解析 triggers.log"""
@@ -62,8 +52,7 @@ class GameDocParser:
                 self.triggers[name] = {
                     'description': desc,
                     'usage': usage,
-                    'scopes': scopes,
-                    'type': self._infer_trigger_type(name, desc, usage)
+                    'scopes': scopes
                 }
     
     def parse_effects(self):
@@ -83,8 +72,7 @@ class GameDocParser:
                 self.effects[name] = {
                     'description': desc,
                     'usage': usage,
-                    'scopes': scopes,
-                    'type': self._infer_effect_type(name, desc, usage)
+                    'scopes': scopes
                 }
     
     def parse_scopes(self):
@@ -303,94 +291,7 @@ class GameDocParser:
             return match.group(1)
         return 'unknown'
     
-    def _infer_trigger_type(self, name: str, desc: str, usage: str) -> str:
-        """推断 trigger 类型"""
-        desc_lower = desc.lower()
-        
-        # 控制流
-        if name in ['if', 'else_if', 'switch']:
-            return 'control_flow'
-        
-        # Hidden
-        if 'hidden' in name or 'hide' in desc_lower:
-            return 'hidden'
-        
-        # Wrapper
-        if 'tooltip' in desc_lower or 'custom' in name:
-            return 'wrapper'
-        
-        # 逻辑运算
-        if name in ['not', 'and', 'or', 'nor', 'nand']:
-            return 'logic'
-        
-        # 检查是否包含子块
-        if '<triggers>' in usage or '{ <' in usage:
-            return 'block'
-        
-        # 简单比较
-        if any(op in usage for op in ['<', '>', '=', '==']):
-            return 'comparison'
-        
-        return 'simple'
-    
-    def _infer_effect_type(self, name: str, desc: str, usage: str) -> str:
-        """推断 effect 类型"""
-        desc_lower = desc.lower()
-        
-        # 控制流
-        if name in ['if', 'else_if']:
-            return 'control_flow'
-        
-        # Hidden
-        if 'hidden' in name or 'prevents enclosed effects' in desc_lower:
-            return 'hidden'
-        
-        # Random
-        if 'random' in name or 'random' in desc_lower:
-            return 'random'
-        
-        # Wrapper
-        if 'tooltip' in desc_lower or 'custom' in name:
-            return 'wrapper'
-        
-        # 检查是否包含子块
-        if '<effects>' in usage or '{ <' in usage:
-            return 'block'
-        
-        return 'simple'
-    
-    def classify_special_blocks(self):
-        """对特殊块进行分类"""
-        # 控制流
-        for name in ['if', 'else_if', 'switch']:
-            if name in self.triggers:
-                self.special_blocks['control_flow'].add(f'trigger:{name}')
-            if name in self.effects:
-                self.special_blocks['control_flow'].add(f'effect:{name}')
-        
-        # Hidden
-        for name in ['hidden_trigger', 'hidden_effect']:
-            if name.replace('_trigger', '') in self.triggers or name in self.triggers:
-                self.special_blocks['hidden'].add(f'trigger:{name}')
-            if name.replace('_effect', '') in self.effects or name in self.effects:
-                self.special_blocks['hidden'].add(f'effect:{name}')
-        
-        # Random
-        for name in ['random_list', 'locked_random_list', 'random']:
-            if name in self.effects:
-                self.special_blocks['random'].add(f'effect:{name}')
-        
-        # Scope change
-        for name, info in self.scopes.items():
-            self.special_blocks['scope_change'].add(name)
-        
-        # Wrapper
-        for name in ['custom_tooltip', 'tooltip']:
-            if name in self.triggers:
-                self.special_blocks['wrapper'].add(f'trigger:{name}')
-            if name in self.effects:
-                self.special_blocks['wrapper'].add(f'effect:{name}')
-    
+
     def export_to_json(self, output_dir: Path):
         """导出为 JSON 文件"""
         output_dir = Path(output_dir)
@@ -412,34 +313,6 @@ class GameDocParser:
         with open(output_dir / 'localizations.json', 'w', encoding='utf-8') as f:
             json.dump(self.localizations, f, indent=2, ensure_ascii=False)
         
-        # 导出特殊块分类（用于代码生成）
-        special_blocks_export = {
-            k: list(v) for k, v in self.special_blocks.items()
-        }
-        with open(output_dir / 'special_blocks.json', 'w', encoding='utf-8') as f:
-            json.dump(special_blocks_export, f, indent=2, ensure_ascii=False)
-        
-        # 导出简化版本（只有名称列表，用于快速查找）
-        simplified = {
-            'triggers': {
-                'hidden': [k for k, v in self.triggers.items() if v['type'] == 'hidden'],
-                'control_flow': [k for k, v in self.triggers.items() if v['type'] == 'control_flow'],
-                'block': [k for k, v in self.triggers.items() if v['type'] == 'block'],
-                'simple': [k for k, v in self.triggers.items() if v['type'] == 'simple'],
-            },
-            'effects': {
-                'hidden': [k for k, v in self.effects.items() if v['type'] == 'hidden'],
-                'control_flow': [k for k, v in self.effects.items() if v['type'] == 'control_flow'],
-                'random': [k for k, v in self.effects.items() if v['type'] == 'random'],
-                'block': [k for k, v in self.effects.items() if v['type'] == 'block'],
-                'simple': [k for k, v in self.effects.items() if v['type'] == 'simple'],
-            },
-            'scopes': list(self.scopes.keys()),
-        }
-        
-        with open(output_dir / 'simplified.json', 'w', encoding='utf-8') as f:
-            json.dump(simplified, f, indent=2, ensure_ascii=False)
-        
         print(f"✓ 导出完成到 {output_dir}")
         print(f"  - triggers: {len(self.triggers)} 个")
         print(f"  - effects: {len(self.effects)} 个")
@@ -451,20 +324,8 @@ class GameDocParser:
         """打印摘要信息"""
         print("\n=== 解析摘要 ===")
         print(f"\nTriggers: {len(self.triggers)} 个")
-        trigger_types = {}
-        for info in self.triggers.values():
-            t = info['type']
-            trigger_types[t] = trigger_types.get(t, 0) + 1
-        for t, count in sorted(trigger_types.items()):
-            print(f"  - {t}: {count}")
         
         print(f"\nEffects: {len(self.effects)} 个")
-        effect_types = {}
-        for info in self.effects.values():
-            t = info['type']
-            effect_types[t] = effect_types.get(t, 0) + 1
-        for t, count in sorted(effect_types.items()):
-            print(f"  - {t}: {count}")
         
         print(f"\nScopes: {len(self.scopes)} 个")
         
@@ -480,13 +341,6 @@ class GameDocParser:
         total_properties = sum(len(info['properties']) for info in self.localizations.values())
         print(f"  - 总推广: {total_promotions} 个")
         print(f"  - 总属性: {total_properties} 个")
-        
-        print("\n特殊块分类:")
-        for category, blocks in self.special_blocks.items():
-            print(f"  - {category}: {len(blocks)} 个")
-            if len(blocks) <= 10:
-                for block in sorted(blocks):
-                    print(f"    • {block}")
 
 
 def main():
@@ -507,9 +361,8 @@ def main():
     
     print("\n✓ 完成！")
     print(f"\n生成的文件可以用于:")
-    print(f"  1. block_classifier.py - 识别特殊块")
-    print(f"  2. trigger_generator.py - 生成 trigger 代码")
-    print(f"  3. effect_generator.py - 生成 effect 代码")
+    print(f"  1. trigger_generator.py - 生成 trigger 代码")
+    print(f"  2. effect_generator.py - 生成 effect 代码")
 
 
 if __name__ == '__main__':

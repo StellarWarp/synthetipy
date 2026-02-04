@@ -7,7 +7,7 @@
 from typing import List, Optional
 from abc import ABC, abstractmethod
 from ...ast_nodes import *
-from ...pdx_constants import COMPARISON_OPS, LOGIC_OPERATORS, METHOD_PREFIXES
+from ...pdx_constants import COMPARISON_OPS, LOGIC_OPERATORS
 
 
 class GeneratorContext:
@@ -57,11 +57,7 @@ class GeneratorContext:
 
 class BaseExpressionGenerator(ABC):
     """表达式生成器基类"""
-    
-    # 使用集中管理的常量
-    COMPARISON_OPS = COMPARISON_OPS
-    LOGIC_OPERATORS = LOGIC_OPERATORS
-    METHOD_PREFIXES = METHOD_PREFIXES
+       
     
     def __init__(self):
         self.indent_level = 0
@@ -104,20 +100,6 @@ class BaseExpressionGenerator(ABC):
             self.context.current_indent = self.indent_level
     
     # === 辅助方法 ===
-    
-    def _is_method_call(self, key: str) -> bool:
-        """判断是否是方法调用"""
-        for prefix in self.METHOD_PREFIXES:
-            if key.startswith(prefix):
-                return True
-        
-        # 其他已知的方法名
-        known_methods = {
-            'check_variable', 'free_jobs_of_type', 'count_owned_planet',
-            'set_variable', 'change_variable', 'clear_variable'
-        }
-        
-        return key in known_methods
     
     @abstractmethod
     def generate(self, *args, **kwargs) -> List[str]:

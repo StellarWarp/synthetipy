@@ -6,21 +6,36 @@
 
 from typing import Dict, List, Set, Optional, Any
 from ..ast_nodes import *
+from ..compiler import compile_ast
 import re
 
 
 class MacroParameter:
     """宏参数信息"""
     
-    def __init__(self, name: str, default: Optional[str] = None, is_simple: bool = True):
+    def __init__(self, name: str, default: Optional[str] = None):
         self.name = name
         self.default = default
-        self.is_simple = is_simple  # True=简单使用，False=需要meta.pdx
         self.inferred_type = 'str'  # 'int', 'float', 'str', 'bool'
         self.usages: List[str] = []  # 使用上下文
     
     def __repr__(self):
-        return f"MacroParameter({self.name}, type={self.inferred_type}, simple={self.is_simple})"
+        return f"MacroParameter({self.name}, type={self.inferred_type})"
+
+
+class MacroInfo:
+    """宏左值的序列化与参数集合
+
+    包含：
+        - pdx_template: 原始 PDX 片段（字符串）
+        - parameters: 局部参数字典（仅该宏左值范围）
+        - meta_lines: 可直接插入的 meta.pdx(...) 行（不含 return，便于在上下文中插入）
+    """
+
+    def __init__(self, pdx_template: str, parameters: Dict[str, MacroParameter], meta_lines: Optional[List[str]] = None):
+        self.pdx_template = pdx_template
+        self.parameters = parameters
+        self.meta_lines = meta_lines or []
 
 
 class MacroParameterCollector:
@@ -28,7 +43,8 @@ class MacroParameterCollector:
     
     def __init__(self):
         self.parameters: Dict[str, MacroParameter] = {}
-        self.has_complex_usage = False
+        # 存储 PropertyNode -> MacroInfo 的映射
+        self.macro_lefts: Dict[PropertyNode, MacroInfo] = {}
     
     def collect(self, node: ASTNode) -> Dict[str, MacroParameter]:
         """
@@ -50,10 +66,8 @@ class MacroParameterCollector:
         elif isinstance(node, IdentifierExpressionNode):
             self._check_identifier(node)
         elif isinstance(node, PropertyNode):
-            self._visit(node.value)
-            # 检查键是否包含宏参数
-            if isinstance(node.key, str):
-                self._check_string_for_params(node.key, context='property_key')
+            # 将 Property 的处理委托到单独方法以保持 _visit 简洁
+            self._handle_property_node(node)
         elif isinstance(node, BlockNode):
             for stmt in node.statements:
                 self._visit(stmt)
@@ -63,6 +77,49 @@ class MacroParameterCollector:
         elif isinstance(node, ListNode):
             for item in node.items:
                 self._visit(item)
+        else:
+            raise NotImplementedError(f"Unsupported AST node type: {type(node).__name__}")
+
+    def _handle_property_node(self, node: PropertyNode):
+        """处理 PropertyNode：收集右侧参数，识别并注册宏左值"""
+        # 先收集右侧的通用参数
+        self._visit(node.value)
+
+        # 处理键：键可以是字符串或 AST 节点
+        key_source = None
+        if isinstance(node.key, str):
+            if '$' in node.key:
+                key_source = node.key
+                self._check_string_for_params(node.key, context='property_key')
+        else:
+            key_source = node.key.to_source()
+
+        # 如果键含有宏参数（$），则收集该宏左值的局部参数并序列化为 pdx 模板
+        if key_source and '$' in key_source:
+            local_collector = MacroParameterCollector()
+            if isinstance(node.key, str):
+                local_collector._check_string_for_params(node.key, context='property_key_local')
+            else:
+                local_collector._visit(node.key)
+            local_collector._visit(node.value)
+
+            # 合并局部参数到全局参数集合
+            for pname, pinfo in local_collector.parameters.items():
+                self._add_parameter(pname, pinfo.default, context='macro_left')
+
+
+
+            # 序列化 PDX 模板（键 + 右值）使用 Compiler 提供的序列化
+            pdx_template = compile_ast(node)
+
+            # 生成 meta.pdx 行（不含 return，方便插入语句中）
+            meta_lines = generate_pdx_block(pdx_template, local_collector.parameters, indent=0, include_return=False)
+
+            # 存储 MacroInfo
+            self.macro_lefts[node] = MacroInfo(pdx_template, local_collector.parameters, meta_lines)
+
+        # 非宏左值的 PropertyNode 不做额外处理（右侧已在开头处理）
+        return
     
     def _check_literal(self, node: LiteralNode):
         """检查字面量中的宏参数"""
@@ -75,64 +132,46 @@ class MacroParameterCollector:
             if '|' in param_name:
                 # 带默认值：$PARAM|default$
                 name, default = param_name.split('|', 1)
-                self._add_parameter(name, default, is_simple=True, context='literal')
+                self._add_parameter(name, default, context='literal')
             else:
-                self._add_parameter(param_name, is_simple=True, context='literal')
+                self._add_parameter(param_name, context='literal')
         elif '$' in value:
             # 字符串拼接：building_$TYPE$_$LEVEL$
             self._check_string_for_params(value, context='concatenation')
     
     def _check_identifier(self, node: IdentifierExpressionNode):
         """检查标识符表达式中的宏参数"""
-        expr = node.expression
-        
-        # 检查是否是纯宏参数
-        if expr.startswith('$') and expr.endswith('$') and expr.count('$') == 2:
-            param_name = expr[1:-1]
-            if '|' in param_name:
-                name, default = param_name.split('|', 1)
-                self._add_parameter(name, default, is_simple=True, context='identifier')
-            else:
-                self._add_parameter(param_name, is_simple=True, context='identifier')
-            return  # 早返回，不继续处理
-        
-        # 检查解析后的参数（value:func|PARAM|$VAR$|）优先
-        if hasattr(node, 'parsed') and node.parsed and hasattr(node.parsed, 'arguments'):
-            parsed = node.parsed
-            # 检查参数列表
-            has_forwarding = False
-            for arg in parsed.arguments:
-                # 处理 MacroParam 对象
-                if hasattr(arg, 'name'):  # MacroParam 对象
-                    self._add_parameter(
-                        arg.name, 
-                        arg.default, 
-                        is_simple=True, 
-                        context='parameter_forwarding'
-                    )
-                    has_forwarding = True
-                # 处理字符串形式的宏参数
-                elif isinstance(arg, str) and arg.startswith('$') and arg.endswith('$') and arg.count('$') == 2:
-                    param_name = arg[1:-1]
-                    if '|' in param_name:
-                        name, default = param_name.split('|', 1)
-                        self._add_parameter(name, default, is_simple=True, context='parameter_forwarding')
-                    else:
-                        self._add_parameter(param_name, is_simple=True, context='parameter_forwarding')
-                    has_forwarding = True
-                # 参数拼接在转发中
-                elif isinstance(arg, str) and '$' in arg:
-                    self._check_string_for_params(arg, context='parameter_forwarding_concat')
-                    has_forwarding = True
-            
-            # 如果有参数转发，不再处理表达式字符串本身
-            if has_forwarding:
-                return
-        
-        # 其他情况：拼接或动态调用
-        if '$' in expr:
-            self._check_string_for_params(expr, context='expression')
-    
+        # 宏表达式模式：直接提取 MacroParam
+        if getattr(node, 'is_macro_expression', False):
+            for mp in node.macro_expression.macro_params:
+                self._add_parameter(mp.name, mp.default, context='identifier_macro')
+            return
+
+        # 结构化模式：检查 call_info 参数、identifier 名称及 scope
+        if getattr(node, 'call_info', None):
+            for key, val in node.call_info.arguments:
+                # 值可能是 MacroParam、IdentifierExpressionNode、字符串等
+                if isinstance(val, MacroParam):
+                    self._add_parameter(val.name, val.default, context='call_arg')
+                elif isinstance(val, IdentifierExpressionNode):
+                    self._visit(val)
+                elif isinstance(val, str):
+                    self._check_string_for_params(val, context='call_arg')
+
+        # 检查 identifier 名称是否包含宏
+        if getattr(node, 'identifier', None):
+            ident = node.identifier
+            if isinstance(ident, IdentifierNode):
+                if isinstance(ident.name, str) and '$' in ident.name:
+                    self._check_string_for_params(ident.name, context='identifier_name')
+                if getattr(ident, 'scope_binding', None):
+                    self._visit(ident.scope_binding)
+
+        # 检查 scope 链
+        if getattr(node, 'scope', None):
+            self._visit(node.scope)
+
+
     def _check_string_for_params(self, text: str, context: str):
         """检查字符串中的宏参数（包括拼接情况）"""
         # 正则匹配 $PARAM$ 或 $PARAM|default$
@@ -146,40 +185,28 @@ class MacroParameterCollector:
             
             if '|' in param_str:
                 name, default = param_str.split('|', 1)
-                self._add_parameter(
-                    name, 
-                    default, 
-                    is_simple=not is_concatenated,
-                    context=context
-                )
+                self._add_parameter(name, default, context=context)
             else:
-                self._add_parameter(
-                    param_str, 
-                    is_simple=not is_concatenated,
-                    context=context
-                )
+                self._add_parameter(param_str, context=context)
+
+
     
     def _add_parameter(self, name: str, default: Optional[str] = None, 
-                       is_simple: bool = True, context: str = ''):
+                       context: str = ''):
         """添加或更新参数"""
         if name not in self.parameters:
-            self.parameters[name] = MacroParameter(name, default, is_simple)
-            # 首次添加时也要检查是否复杂
-            if not is_simple:
-                self.has_complex_usage = True
+            self.parameters[name] = MacroParameter(name, default)
         else:
             # 更新现有参数
             param = self.parameters[name]
             if default and not param.default:
                 param.default = default
-            # 如果任何一次使用是复杂的，整体标记为复杂
-            if not is_simple:
-                param.is_simple = False
-                self.has_complex_usage = True
         
         # 记录使用上下文
         if context:
             self.parameters[name].usages.append(context)
+    # PDX 序列化由 Compiler 提供（compile_ast 函数），移除该模块中的手写序列化以降低重复代码和维护成本。
+    # 在需要生成 PDX 模板时直接调用 compile_ast(node)。
 
 
 class ParameterTypeInferencer:
@@ -305,7 +332,8 @@ def format_parameter_value(param_name: str, param_type: str = 'str') -> str:
 def generate_pdx_block(
     pdx_template: str,
     parameters: Dict[str, MacroParameter],
-    indent: int = 0
+    indent: int = 0,
+    include_return: bool = True
 ) -> List[str]:
     """
     生成 meta.pdx() 调用代码
@@ -314,6 +342,7 @@ def generate_pdx_block(
         pdx_template: PDX 代码模板
         parameters: 参数字典
         indent: 缩进级别
+        include_return: 是否包含前导 return（用于 value/trigger 顶层返回），默认 True 保持向后兼容
     
     Returns:
         生成的代码行
@@ -326,7 +355,8 @@ def generate_pdx_block(
     params = ", ".join(param_strs)
     
     # 生成 meta.pdx() 调用
-    lines.append(f'{indent_str}return meta.pdx("""')
+    prefix = f"{indent_str}return " if include_return else f"{indent_str}"
+    lines.append(f'{prefix}meta.pdx("""')
     
     # 添加 PDX 模板内容（保持原格式）
     for line in pdx_template.strip().split('\n'):

@@ -10,8 +10,6 @@ from .formatters import Formatter
 from .trigger_generator import TriggerGenerator
 from .effect_generator import EffectGenerator
 from .value_generator import ValueGenerator
-from .scope_analyzer import ScopeAnalyzer
-
 
 class PythonCodeGenerator:
     """AST → Python 代码生成器"""
@@ -29,7 +27,6 @@ class PythonCodeGenerator:
         self.trigger_gen = TriggerGenerator()
         self.effect_gen = EffectGenerator()
         self.value_gen = ValueGenerator()
-        self.scope_analyzer = ScopeAnalyzer()
         self.indent_level = 0
         self.lines: List[str] = []
         self.inline_script_counter = 0  # inline_script 计数器
@@ -174,7 +171,7 @@ class PythonCodeGenerator:
         
         else:
             # 简单属性
-            formatted_value = self._format_value(value)
+            formatted_value = self._format_literal(value)
             self._add_line(f"{key} = {formatted_value}")
     
     def _generate_nested_class(self, name: str, block: BlockNode):
@@ -242,9 +239,9 @@ class PythonCodeGenerator:
         else:
             self._add_line("# ERROR: Could not extract inline_script path")
     
-    def _format_value(self, value: ASTNode) -> str:
+    def _format_literal(self, value: ASTNode) -> str:
         """Format value (delegate to Formatter)"""
-        return self.formatter.format_value(value)
+        return self.formatter.format_literal(value)
     
     def _format_list(self, lst: ListNode) -> str:
         """Format list (delegate to Formatter)"""

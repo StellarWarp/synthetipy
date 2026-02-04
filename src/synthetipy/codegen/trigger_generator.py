@@ -11,7 +11,8 @@ from .generators import (
     BaseExpressionGenerator,
     GeneratorContext,
     ControlFlowGenerator,
-    ExpressionBuilder
+    ExpressionBuilder,
+    ScopeTranslator,
 )
 from .macro_parameter_utils import (
     MacroParameter,
@@ -20,6 +21,8 @@ from .macro_parameter_utils import (
     generate_function_signature,
     generate_pdx_block
 )
+from ..compiler import compile_ast
+from ..pdx_constants import LOGIC_OPERATORS
 from .runtime_deps import get_decorator_for_type
 
 
@@ -30,10 +33,12 @@ class TriggerGenerator(BaseExpressionGenerator):
         super().__init__()
         self.control_flow_gen = None
         self.expr_builder = None
+        self.scope_translator = None
         self.parameters: Dict[str, MacroParameter] = {}
-        self.has_complex_params = False
+
     
-    def generate(self, name: str, block: BlockNode, scope_param: str = "scope", add_decorator: bool = True) -> List[str]:
+    def generate(self, name: str, 
+                 block: BlockNode, scope_param: str = "scope", add_decorator: bool = True) -> List[str]:
         """
         生成 trigger 方法
         
@@ -55,13 +60,14 @@ class TriggerGenerator(BaseExpressionGenerator):
         # 1. 收集宏参数
         collector = MacroParameterCollector()
         self.parameters = collector.collect(block)
-        self.has_complex_params = collector.has_complex_usage
+        # 保留 collector 引用，供生成时查询 macro_lefts
+        self.collector = collector
         
         # 2. 推断参数类型
         if self.parameters:
             ParameterTypeInferencer.infer_all(self.parameters)
-        
-        # 初始化共享组件
+         
+        self.scope_translator = ScopeTranslator(self)
         self.control_flow_gen = ControlFlowGenerator(self)
         self.expr_builder = ExpressionBuilder(self)
         
@@ -79,128 +85,55 @@ class TriggerGenerator(BaseExpressionGenerator):
         self._indent()
         
         # 4. 生成方法体
-        if not block.statements:
-            self._add_line("return True")
-        elif self.has_complex_params:
-            # 复杂参数：使用 meta.pdx()
-            self._generate_pdx_trigger(block)
-        else:
-            # 简单参数：直接生成
-            self._generate_trigger_body(block)
+        self._generate_trigger_body(block)
         
         self._dedent()
         return self.lines
     
     def _generate_trigger_body(self, block: BlockNode):
-        """
-        生成 trigger 主体
-        
-        策略：
-        1. 检查是否有 if/else 控制流
-        2. 如果有，生成 if/elif/else 语句
-        3. 如果没有，尝试转换为单个表达式
-        """
-        # 检查是否包含控制流
-        if self.control_flow_gen.has_control_flow(block):
-            # 生成 if/elif/else 语句，使用回调处理分支内容
-            self.control_flow_gen.generate_control_flow(
-                block,
-                self._handle_trigger_branch
-            )
-        else:
-            # 尝试转换为表达式
-            expr = self.expr_builder.block_to_expression(block)
-            if expr:
-                self._add_line(f"return {expr}")
-            else:
-                # 无法转换为单一表达式，生成多语句形式
-                self._generate_statement_sequence(block)
-    
+        for stmt in block.statements:
+            self._generate_statement(stmt)
+                
+
     def _handle_trigger_branch(self, branch_block: BlockNode, branch_type: str):
         """处理 trigger 分支的回调"""
         # 递归生成分支内容
         self._generate_trigger_body(branch_block)
-    
-    def _generate_statement_sequence(self, block: BlockNode):
-        """
-        生成语句序列（当无法转换为单一表达式时）
-        
-        策略：使用局部变量保存中间结果，最后返回
-        """
-        # TODO: 实现复杂的语句序列生成（early return, 局部变量等）
-        result_var = self.context.get_temp_var("_result")
-        self._add_line(f"{result_var} = True")
-        
-        for stmt in block.statements:
-            # 为每个语句生成检查
-            expr = self.expr_builder.statement_to_expression(stmt)
-            if expr:
-                self._add_line(f"{result_var} = {result_var} and ({expr})")
-        
-        self._add_line(f"return {result_var}")
-    
-    def _generate_pdx_trigger(self, block: BlockNode):
-        """生成复杂参数的 trigger（使用 meta.pdx()）"""
-        # 序列化块回 PDX 代码
-        pdx_template = self._serialize_block_to_pdx(block)
-        
-        # 生成 meta.pdx() 调用
-        pdx_lines = generate_pdx_block(pdx_template, self.parameters, indent=0)
-        for line in pdx_lines:
-            self._add_line(line)
-    
-    def _serialize_block_to_pdx(self, block: BlockNode) -> str:
-        """将块序列化为 PDX 代码字符串（简化版）"""
-        lines = []
-        for stmt in block.statements:
-            lines.append(self._serialize_statement(stmt))
-        return '\n'.join(lines)
-    
-    def _serialize_statement(self, stmt: ASTNode, indent: int = 0) -> str:
-        """序列化单个语句"""
-        ind = '    ' * indent
-        
+
+    def _generate_statement(self, stmt: PropertyNode):
+        """按语句生成（委托 ControlFlowGenerator 或本地 property 处理）"""
         if isinstance(stmt, PropertyNode):
-            key = stmt.key if isinstance(stmt.key, str) else str(stmt.key)
-            if isinstance(stmt.value, BlockNode):
-                lines = [f"{ind}{key} = {{"]
-                for s in stmt.value.statements:
-                    lines.append(self._serialize_statement(s, indent + 1))
-                lines.append(f"{ind}}}")
-                return '\n'.join(lines)
-            else:
-                val_str = self._serialize_value(stmt.value)
-                return f"{ind}{key} = {val_str}"
-        
-        elif isinstance(stmt, ComparisonNode):
-            left = stmt.left if isinstance(stmt.left, str) else str(stmt.left)
-            right = self._serialize_value(stmt.right)
-            return f"{ind}{left} {stmt.operator} {right}"
-        
-        elif isinstance(stmt, ConditionNode):
-            lines = [f"{ind}{stmt.operator} = {{"]
-            for s in stmt.body.statements:
-                lines.append(self._serialize_statement(s, indent + 1))
-            lines.append(f"{ind}}}")
-            return '\n'.join(lines)
-        
-        return f"{ind}# TODO: {type(stmt).__name__}"
-    
-    def _serialize_value(self, value: ASTNode) -> str:
-        """序列化值"""
-        if isinstance(value, LiteralNode):
-            return str(value.value)
-        elif hasattr(value, 'expression'):
-            return value.expression
-        elif isinstance(value, BlockNode):
-            from .exceptions import UnsupportedFeatureError
-            raise UnsupportedFeatureError(
-                f"在 trigger 序列化中遇到嵌套块，这需要特殊处理。"
-                f"BlockNode 包含 {len(value.statements)} 个语句，"
-                f"不能简单地转换为字符串"
-            )
+            
+            # 宏左值优先插入
+            if getattr(self, 'collector', None):
+                macro = self.collector.macro_lefts.get(stmt)
+                if macro:
+                    for l in macro.meta_lines:
+                        self._add_line(l)
+                    return
+            # 先让 ControlFlowGenerator 处理结构化语句（if/loop/scope）
+            if self.control_flow_gen.generate_control_flow(stmt, lambda b, t: self._generate_trigger_body(b)):
+                return
+            
+
+            key = str(stmt.key)
+            if key in INBUILT_TRIGGER_METHODS:
+                # 内置 trigger 方法调用
+                expr = self.expr_builder._method_call_to_expression(key, stmt.value)
+                self._add_line(f"return {expr}")
+                self._dedent()
+                return
+            if key in LOGIC_OPERATORS:
+                # 尝试将该语句转换为表达式
+                expr = self.expr_builder.statement_to_expression(stmt)
+                if expr:
+                    self._add_line(f"return {expr}")
+                    self._dedent()
+                    return
+            
+            raise ValueError(f"Unsupported trigger statement: {key}")
+
         else:
-            from .exceptions import UnsupportedFeatureError
-            raise UnsupportedFeatureError(
-                f"_serialize_value 遇到未处理的节点类型: {type(value).__name__}"
-            )
+            raise ValueError("TriggerGenerator only supports PropertyNode statements")
+
+

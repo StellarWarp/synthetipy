@@ -22,66 +22,66 @@ class ControlFlowGenerator:
         self.context = parent_generator.context
     
     def has_control_flow(self, block: BlockNode) -> bool:
-        """检查块是否包含控制流（if/else）"""
+        """检查块是否包含控制流（if/else）、循环或 scope 切换"""
         for stmt in block.statements:
             if isinstance(stmt, PropertyNode):
-                if stmt.key == 'if' and isinstance(stmt.value, BlockNode):
+                # if/else/else_if/else
+                if str(stmt.key) in ('if', 'else_if', 'else') and isinstance(stmt.value, BlockNode):
+                    return True
+                # iteration scopes (every_*, random_*)
+                if hasattr(self.parent, 'scope_translator') and self.parent.scope_translator.is_iteration_scope(stmt.key):
+                    return True
+                # scope LHS (owner = { ... })
+                if hasattr(self.parent, 'scope_translator') and self.parent.scope_translator.is_scope_lhs(stmt.key) and isinstance(stmt.value, BlockNode):
                     return True
         return False
     
     def generate_control_flow(
-        self, 
-        block: BlockNode,
+        self,
+        prop: PropertyNode,
         branch_handler: Callable[[BlockNode, str], None]
-    ):
+    ) -> bool:
+        """处理单个 PropertyNode 的控制流/循环/作用域逻辑。
+
+        Returns True 如果该 PropertyNode 被处理（已生成代码），否则返回 False。
         """
-        生成 if/elif/else 控制流
-        
-        Args:
-            block: 包含 if/else 的块
-            branch_handler: 处理分支内容的回调函数
-                签名: (branch_block: BlockNode, branch_type: str) -> None
-                branch_type: 'if', 'elif', 'else'
-        
-        PDX:
-            if = { limit = {...} ... }
-            else_if = { limit = {...} ... }
-            else = {...}
-        
-        Python:
-            if condition:
-                ...
-            elif condition:
-                ...
+        # 对非 PropertyNode 明确返回 False
+        if not isinstance(prop, PropertyNode):
+            return False
+
+        key_str = str(prop.key)
+
+        # if / else_if / else
+        if key_str == 'if' and isinstance(prop.value, BlockNode):
+            self._generate_if_branch(prop.value, 'if', branch_handler)
+            return True
+        if key_str == 'else_if' and isinstance(prop.value, BlockNode):
+            self._generate_if_branch(prop.value, 'elif', branch_handler)
+            return True
+        if key_str == 'else' and isinstance(prop.value, BlockNode):
+            self.parent._add_line('else:')
+            self.parent._indent()
+            branch_handler(prop.value, 'else')
+            self.parent._dedent()
+            return True
+
+        # iteration
+        if hasattr(self.parent, 'scope_translator') and self.parent.scope_translator.is_iteration_scope(prop.key):
+            if hasattr(self.parent, 'loop_gen') and self.parent.loop_gen:
+                self.parent.loop_gen.generate_loop(str(prop.key), prop.value)
+                return True
             else:
-                ...
-        """
-        i = 0
-        statements = block.statements
-        is_first_branch = True
-        
-        while i < len(statements):
-            stmt = statements[i]
-            
-            if isinstance(stmt, PropertyNode):
-                if stmt.key == 'if' and isinstance(stmt.value, BlockNode):
-                    # if 分支
-                    keyword = "if" if is_first_branch else "elif"
-                    self._generate_if_branch(stmt.value, keyword, branch_handler)
-                    is_first_branch = False
-                    
-                elif stmt.key == 'else_if' and isinstance(stmt.value, BlockNode):
-                    # elif 分支
-                    self._generate_if_branch(stmt.value, "elif", branch_handler)
-                    
-                elif stmt.key == 'else' and isinstance(stmt.value, BlockNode):
-                    # else 分支
-                    self.parent._add_line("else:")
-                    self.parent._indent()
-                    branch_handler(stmt.value, 'else')
-                    self.parent._dedent()
-            
-            i += 1
+                raise RuntimeError("Loop generator not available on parent for iteration scope")
+
+        # scope switch
+        if hasattr(self.parent, 'scope_translator') and self.parent.scope_translator.is_scope_lhs(prop.key) and isinstance(prop.value, BlockNode):
+            scope_key = str(prop.key)
+            scope_var = self.parent.scope_translator.enter_scope_block(scope_key)
+            branch_handler(prop.value, 'scope')
+            self.parent.scope_translator.exit_scope_block()
+            return True
+
+        return False
     
     def _generate_if_branch(
         self,
@@ -89,6 +89,14 @@ class ControlFlowGenerator:
         keyword: str,
         branch_handler: Callable[[BlockNode, str], None]
     ):
+        """生成 if/elif 分支
+
+        if_block 结构：
+        {
+            limit = { ... }  # 条件
+            ...              # 满足条件时的内容
+        }
+        """
         """
         生成 if/elif 分支
         
@@ -105,9 +113,17 @@ class ControlFlowGenerator:
             # 导入 logic_blocks 来生成条件表达式
             from .expression_builder import ExpressionBuilder
             
-            expr_builder = ExpressionBuilder(self.parent)
+            expr_builder = ExpressionBuilder(self.parent, self.parent.value_formatter)
             limit_expr = expr_builder.block_to_expression(limit_prop.value)
             
+            # If limit expression could not be converted, raise a clear error rather than
+            # generating invalid Python like `if None:`.
+            if not limit_expr:
+                from ..exceptions import MissingConditionError
+                raise MissingConditionError(
+                    f"{keyword} block limit could not be converted to an expression"
+                )
+
             self.parent._add_line(f"{keyword} {limit_expr}:")
             self.parent._indent()
             

@@ -60,14 +60,6 @@ FILE_TYPE_RULES = {
 # 注意:完整的游戏规则在 game_rules 模块中(从游戏文档自动生成)
 # 这些常量将逐步弃用，使用 game_rules 中的精确规则替代
 
-# 作用域切换（计划迁移到 game_rules.SCOPES）
-SCOPE_SWITCHES = frozenset({
-    'owner', 'capital', 'overlord', 'ruler', 'planet', 
-    'country', 'leader', 'pop', 'fleet', 'ship', 'starbase',
-    'from', 'root', 'prev', 'this', 'solar_system', 'sector',
-    'species', 'army',
-})
-
 # 迭代作用域（计划迁移到 game_rules）
 ITERATION_SCOPES = {
     'any_owned_planet': ('planet', 'owned_planets'),
@@ -84,30 +76,6 @@ ITERATION_SCOPES = {
     'every_owned_fleet': ('fleet', 'owned_fleets'),
 }
 
-# 方法前缀（计划用 game_rules 替代）
-METHOD_PREFIXES = frozenset({
-    'has_', 'can_', 'is_', 'num_', 'any_', 'every_', 
-    'free_', 'count_', 'check_',
-})
-
-# 循环前缀（计划用 game_rules 替代）
-LOOP_PREFIXES = frozenset({'every_', 'random_', 'ordered_'})
-
-LOOP_MAPPINGS = {
-    'owned_planet': ('planet', 'owned_planets'),
-    'owned_pop': ('pop', 'owned_pops'),
-    'owned_ship': ('ship', 'owned_ships'),
-    'owned_fleet': ('fleet', 'owned_fleets'),
-    'owned_leader': ('leader', 'owned_leaders'),
-    'pop': ('pop', 'pops'),
-    'planet': ('planet', 'planets'),
-    'system': ('system', 'systems'),
-    'country': ('country', 'countries'),
-    'neighbor_country': ('neighbor', 'neighbor_countries'),
-    'owned_army': ('army', 'owned_armies'),
-    'owned_starbase': ('starbase', 'owned_starbases'),
-    'megastructure': ('mega', 'megastructures'),
-}
 
 # 变量和标记操作（计划用 game_rules 替代）
 VARIABLE_OPS = frozenset({
@@ -168,3 +136,42 @@ SCOPE_TYPES = {
 # ============================================
 
 LEXER_KEYWORDS = LOGIC_OPERATORS
+
+
+PYTHON_RESERVED_WORDS = frozenset({
+    'from',
+    'class', 
+    'def', 
+    'lambda',
+    'pass',
+    'global',
+    'nonlocal',
+    'assert',
+    'yield',
+})
+
+
+def safe_identifier(name: str) -> str:
+    """Return a safe Python identifier for scope field names (avoid keywords)."""
+    # Simple strategy: append underscore if name is a Python keyword
+    # Keep minimal mapping for now
+    if name in PYTHON_RESERVED_WORDS:
+        return name + '_'
+    return name
+
+
+from synthetipy.game_definitions.identifiers import (
+    EFFECT_IDENTIFIERS_EXCLUSIVE,
+    TRIGGER_IDENTIFIERS_EXCLUSIVE,
+    SHARED_IDENTIFIERS)
+
+TRIGGER_IDENTIFIERS = TRIGGER_IDENTIFIERS_EXCLUSIVE.union(SHARED_IDENTIFIERS)
+EFFECT_IDENTIFIERS = EFFECT_IDENTIFIERS_EXCLUSIVE.union(SHARED_IDENTIFIERS)
+
+def is_trigger_identifier(name: str) -> bool:
+    """Check if a name is a known trigger identifier."""
+    return name in TRIGGER_IDENTIFIERS
+
+def is_effect_identifier(name: str) -> bool:
+    """Check if a name is a known effect identifier."""
+    return name in EFFECT_IDENTIFIERS

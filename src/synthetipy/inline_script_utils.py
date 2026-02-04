@@ -86,7 +86,7 @@ def extract_script_info(node: PropertyNode) -> Tuple[Optional[str], Dict[str, An
     if isinstance(value, BlockNode):
         for stmt in value.statements:
             if isinstance(stmt, PropertyNode):
-                key = stmt.key if isinstance(stmt.key, str) else str(stmt.key)
+                key = str(stmt.key)
                 val = _extract_value(stmt.value)
                 
                 if key == 'script':
@@ -117,7 +117,7 @@ def replace_parameters(text: str, params: Dict[str, Any]) -> str:
 
 def is_inline_script(node: ASTNode) -> bool:
     """检查节点是否是 inline_script"""
-    return isinstance(node, PropertyNode) and node.key == 'inline_script'
+    return isinstance(node, PropertyNode) and str(node.key) == 'inline_script' 
 
 
 def format_meta_inline_script(script_path: str, params: Dict[str, Any]) -> str:
@@ -132,7 +132,7 @@ def format_meta_inline_script(script_path: str, params: Dict[str, Any]) -> str:
         格式化的调用字符串
     """
     if params:
-        params_str = ", ".join(f"{k}={_format_value(v)}" for k, v in params.items())
+        params_str = ", ".join(f"{k}={_format_literal(v)}" for k, v in params.items())
         return f"meta.inline_script(script='{script_path}', {params_str})"
     return f"meta.inline_script(script='{script_path}')"
 
@@ -148,7 +148,7 @@ def _extract_value(node: ASTNode) -> Any:
     return str(node)
 
 
-def _format_value(value: Any) -> str:
+def _format_literal(value: Any) -> str:
     """格式化值为 Python 代码"""
     if isinstance(value, bool):
         return str(value)

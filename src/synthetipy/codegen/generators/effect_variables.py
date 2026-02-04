@@ -7,6 +7,7 @@ Effect 变量和标记操作生成器
 from typing import Optional
 from ...ast_nodes import ASTNode, BlockNode, PropertyNode, LiteralNode
 from ...pdx_constants import VARIABLE_OPS, FLAG_OPS
+from ...pdx_constants import safe_identifier
 
 
 class EffectVariableGenerator:
@@ -43,9 +44,9 @@ class EffectVariableGenerator:
         
         for stmt in value.statements:
             if isinstance(stmt, PropertyNode):
-                if stmt.key == 'which':
+                if str(stmt.key) == 'which':
                     which = self._extract_value(stmt.value)
-                elif stmt.key == 'value':
+                elif str(stmt.key) == 'value':
                     val = self._extract_value(stmt.value)
         
         if which is None:
@@ -65,9 +66,9 @@ class EffectVariableGenerator:
         method = method_map.get(op, op)
         
         if op == 'clear_variable':
-            self.parent._add_line(f"{self.context.current_scope_var}.{method}('{which}')")
+            self.parent._add_line(f"{self.context.current_scope_var}.{safe_identifier(method)}('{which}')")
         else:
-            self.parent._add_line(f"{self.context.current_scope_var}.{method}('{which}', {val})")
+            self.parent._add_line(f"{self.context.current_scope_var}.{safe_identifier(method)}('{which}', {val})")
         
         return True
     
@@ -87,7 +88,7 @@ class EffectVariableGenerator:
         else:
             method = op
         
-        self.parent._add_line(f"{self.context.current_scope_var}.{method}('{flag_name}')")
+        self.parent._add_line(f"{self.context.current_scope_var}.{safe_identifier(method)}('{flag_name}')")
         return True
     
     def _extract_value(self, value: ASTNode) -> str:

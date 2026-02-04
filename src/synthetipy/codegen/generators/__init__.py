@@ -9,7 +9,7 @@ from .control_flow import ControlFlowGenerator
 from .logic_blocks import LogicBlockGenerator
 from .expression_builder import ExpressionBuilder
 from .special_calls import SpecialCallHandler
-from .scope_manager import ScopeManager
+from .scope_translator import ScopeTranslator
 
 # Effect 专用生成器
 from .effect_loops import EffectLoopGenerator
@@ -23,7 +23,7 @@ __all__ = [
     'LogicBlockGenerator',
     'ExpressionBuilder',
     'SpecialCallHandler',
-    'ScopeManager',
+    'ScopeTranslator',
     # Effect 专用
     'EffectLoopGenerator',
     'EffectVariableGenerator',

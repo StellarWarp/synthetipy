@@ -27,6 +27,7 @@ from .macro_parameter_utils import (
     generate_pdx_block
 )
 from .runtime_deps import get_decorator_for_type
+from ..pdx_constants import safe_identifier
 
 
 class ValueGenerator:
@@ -48,7 +49,7 @@ class ValueGenerator:
         self.lines: List[str] = []
         self.scope_var = "scope"
         self.parameters = {}  # 收集的宏参数
-        self.has_complex_params = False  # 是否包含复杂参数
+
     
     def generate(self, name: str, block: BlockNode, scope_param: str = "scope", add_decorator: bool = True) -> List[str]:
         """
@@ -70,7 +71,8 @@ class ValueGenerator:
         # 1. 收集宏参数
         collector = MacroParameterCollector()
         self.parameters = collector.collect(block)
-        self.has_complex_params = collector.has_complex_usage
+        # 保留 collector 引用，供生成时查询 macro_lefts
+        self.collector = collector
         
         # 2. 推断参数类型
         ParameterTypeInferencer.infer_all(self.parameters)
@@ -124,7 +126,7 @@ class ValueGenerator:
         indent_str = "    " * indent
         
         if isinstance(stmt, PropertyNode):
-            key = stmt.key if isinstance(stmt.key, str) else str(stmt.key)
+            key = str(stmt.key)
             value = self._serialize_value(stmt.value)
             
             if isinstance(stmt.value, BlockNode):
@@ -170,7 +172,7 @@ class ValueGenerator:
     
     def _generate_value_statement(self, prop: PropertyNode):
         """生成单个 value 语句"""
-        key = prop.key if isinstance(prop.key, str) else str(prop.key)
+        key = str(prop.key)
         value = prop.value
         
         # 算术操作
@@ -192,7 +194,7 @@ class ValueGenerator:
     def _generate_arithmetic_op(self, op: str, value: ASTNode):
         """生成算术操作"""
         py_op = self.ARITHMETIC_OPS[op]
-        val_str = self._format_value(value)
+        val_str = Formatter.format_literal_any(value, self.parameters)
         
         if op in ('base', 'set'):
             self._add_line(f"result = {val_str}")
@@ -217,7 +219,7 @@ class ValueGenerator:
         
         for stmt in block.statements:
             if isinstance(stmt, PropertyNode):
-                key = stmt.key if isinstance(stmt.key, str) else str(stmt.key)
+                key = str(stmt.key)
                 if key in self.ARITHMETIC_OPS:
                     operations.append(stmt)
                 else:
@@ -234,7 +236,7 @@ class ValueGenerator:
         # 生成操作
         if operations:
             for op_stmt in operations:
-                key = op_stmt.key if isinstance(op_stmt.key, str) else str(op_stmt.key)
+                key = str(op_stmt.key)
                 self._generate_arithmetic_op(key, op_stmt.value)
         else:
             self._add_line("pass")
@@ -261,7 +263,7 @@ class ValueGenerator:
         
         for stmt in block.statements:
             if isinstance(stmt, PropertyNode):
-                key = stmt.key if isinstance(stmt.key, str) else str(stmt.key)
+                key = str(stmt.key)
                 
                 if key == 'trigger':
                     trigger = self._get_literal_value(stmt.value)
@@ -270,7 +272,7 @@ class ValueGenerator:
                 elif key == 'parameters' and isinstance(stmt.value, BlockNode):
                     for p in stmt.value.statements:
                         if isinstance(p, PropertyNode):
-                            pkey = p.key if isinstance(p.key, str) else str(p.key)
+                            pkey = str(p.key)
                             params[pkey] = self._get_literal_value(p.value)
         
         if trigger:
@@ -279,86 +281,15 @@ class ValueGenerator:
                 # 格式化参数值（处理宏参数）
                 formatted_params = []
                 for k, v in params.items():
-                    formatted_val = self._format_value_for_call(v)
+                    formatted_val = Formatter.format_literal_any(v, self.parameters)
                     formatted_params.append(f"{k}={formatted_val}")
                 params_str = ", ".join(formatted_params)
-                call = f"{self.scope_var}.{trigger}({params_str})"
+                call = f"{self.scope_var}.{safe_identifier(trigger)}({params_str})"
             else:
                 call = f"{self.scope_var}.{trigger}()"
             
-            py_op = self.ARITHMETIC_OPS.get(mode, '+=')
+            py_op = self.ARITHMETIC_OPS.get(mode, '+=')  
             self._add_line(f"result {py_op} {call}")
-    
-    def _format_value_for_call(self, value: Any) -> str:
-        """格式化函数调用中的参数值"""
-        if isinstance(value, str):
-            # 检查是否是宏参数
-            if value.startswith('$') and value.endswith('$') and value.count('$') == 2:
-                param_name = value[1:-1]
-                if '|' in param_name:
-                    param_name = param_name.split('|')[0]
-                if param_name in self.parameters and self.parameters[param_name].is_simple:
-                    return param_name  # 直接返回参数名
-            return repr(value)
-        return repr(value)
-    
-    def _format_value(self, value: ASTNode) -> str:
-        """格式化值表达式"""
-        # 首先尝试特殊引用（value:, modifier:, event_target:）
-        # 传递参数字典以支持参数转发
-        special = Formatter.format_special_reference(value, self.scope_var, self.parameters)
-        if special:
-            return special
-        
-        if isinstance(value, LiteralNode):
-            val = value.value
-            # 数值
-            if isinstance(val, (int, float)):
-                return str(val)
-            if isinstance(val, str):
-                # 尝试解析为数字
-                try:
-                    if '.' in val:
-                        return str(float(val))
-                    return str(int(val))
-                except ValueError:
-                    pass
-                
-                # 宏参数 $PARAM$ - 简单情况直接使用参数名
-                if val.startswith('$') and val.endswith('$') and val.count('$') == 2:
-                    param_name = val[1:-1]
-                    if '|' in param_name:
-                        # 去掉默认值
-                        param_name = param_name.split('|')[0]
-                    # 检查是否是已知的简单参数
-                    if param_name in self.parameters and self.parameters[param_name].is_simple:
-                        return param_name  # 直接返回参数名
-                    return repr(val)  # 复杂参数保留字符串
-                
-                # @常量引用
-                if val.startswith('@'):
-                    return repr(val)
-                
-                return repr(val)
-        
-        elif isinstance(value, IdentifierExpressionNode):
-            # 如果不是特殊调用，当作作用域属性
-            expr = value.expression
-            # 宏参数 - 简单情况
-            if isinstance(expr, str) and expr.startswith('$') and expr.endswith('$') and expr.count('$') == 2:
-                param_name = expr[1:-1]
-                if '|' in param_name:
-                    param_name = param_name.split('|')[0]
-                if param_name in self.parameters and self.parameters[param_name].is_simple:
-                    return param_name
-                return repr(expr)
-            return f"{self.scope_var}.{expr}"
-        
-        elif isinstance(value, BlockNode):
-            # 嵌套块，可能是内联计算
-            return "0.0  # TODO: inline block"
-        
-        return "0.0"
     
     def _format_conditions(self, conditions: List[ASTNode]) -> str:
         """格式化条件列表为 Python 表达式"""
@@ -366,7 +297,7 @@ class ValueGenerator:
         
         for cond in conditions:
             if isinstance(cond, PropertyNode):
-                key = cond.key if isinstance(cond.key, str) else str(cond.key)
+                key = str(cond.key)
                 
                 # 逻辑块 NOT = { ... }
                 if key == 'NOT' and isinstance(cond.value, BlockNode):
@@ -397,30 +328,30 @@ class ValueGenerator:
                 if val in ('yes', 'no', True, False):
                     is_true = val in ('yes', True)
                     if is_true:
-                        parts.append(f"{self.scope_var}.{key}()")
+                        parts.append(f"{self.scope_var}.{safe_identifier(key)}()")
                     else:
-                        parts.append(f"not {self.scope_var}.{key}()")
+                        parts.append(f"not {self.scope_var}.{safe_identifier(key)}()")
                 
                 # has_xxx = something (方法调用带参数)
                 elif key.startswith('has_'):
-                    parts.append(f"{self.scope_var}.{key}({repr(val)})")
+                    parts.append(f"{self.scope_var}.{safe_identifier(key)}({repr(val)})")
                 
                 # is_xxx = something
                 elif key.startswith('is_'):
-                    parts.append(f"{self.scope_var}.{key}({repr(val)})")
+                    parts.append(f"{self.scope_var}.{safe_identifier(key)}({repr(val)})")
                 
                 # 其他属性检查
                 else:
-                    parts.append(f"{self.scope_var}.{key} == {repr(val)}")
+                    parts.append(f"{self.scope_var}.{safe_identifier(key)} == {repr(val)}")
             
             elif isinstance(cond, ComparisonNode):
-                left = cond.left if isinstance(cond.left, str) else str(cond.left)
-                right = self._format_value(cond.right) if hasattr(cond, 'right') else "0"
+                left = str(cond.left)
+                right = Formatter.format_literal_any(cond.right, self.parameters) if hasattr(cond, 'right') else "0"
                 op = cond.operator
                 # 转换操作符
                 if op == '=':
                     op = '=='
-                parts.append(f"{self.scope_var}.{left} {op} {right}")
+                parts.append(f"{self.scope_var}.{safe_identifier(left)} {op} {right}")
         
         if not parts:
             return "True"

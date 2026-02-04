@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "synthetipy"
+version = "0.1.0"
+description = "Python 工具包：将 Paradox 脚本语言转换为可编程的 AST"
+# 修正：readme 应该是直接指向文件，content-type 通常是自动识别的
+readme = "README.md"
+requires-python = ">=3.8"
+authors = [
+    { name = "Estelle", email = "lsxestelle@icloud.com" }
+]
+license = { text = "GPL-3.0-or-later" }
+dependencies = []
+
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Code Generators",
+    "Topic :: Software Development :: Compilers",
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+]
+
+# 修正：urls 需要放在 project.urls 下，而不是 project 内的简单字典
+[project.urls]
+"Homepage" = "https://github.com/StellarWarp/synthetipy"
+"Bug Tracker" = "https://github.com/StellarWarp/synthetipy/issues"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "black",
+    "mypy"
+]
+
+[tool.setuptools]
+# 显式包含 py.typed 以支持 PEP 561 类型检查
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+# 这里的 exclude 是针对包名的，如果你的 tests 等目录不在 src 内，通常不需要写
+exclude = ["tests*", "docs*", "examples*"]
+
+[tool.setuptools.package-data]
+"*" = ["py.typed"]

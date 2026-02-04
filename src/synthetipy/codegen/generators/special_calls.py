@@ -174,19 +174,19 @@ class SpecialCallHandler:
         # 提取 text 参数
         text_value = None
         for stmt in value.statements:
-            if isinstance(stmt, PropertyNode) and stmt.key == 'text':
+            if isinstance(stmt, PropertyNode) and str(stmt.key) == 'text':
                 text_value = self._value_to_python(stmt.value)
                 break
         
         # 提取非 text/fail_text 的语句作为条件
         conditions = [s for s in value.statements 
                      if not (isinstance(s, PropertyNode) and 
-                            s.key in ('text', 'fail_text', 'success_text'))]
+                            str(s.key) in ('text', 'fail_text', 'success_text'))]
         
         # 生成条件表达式
         condition_expr = "True"
         if conditions:
-            expr_builder = ExpressionBuilder(self.parent)
+            expr_builder = ExpressionBuilder(self.parent, self.parent.value_formatter)
             condition_block = BlockNode(conditions)
             condition_expr = expr_builder.block_to_expression(condition_block)
         
@@ -276,5 +276,5 @@ class SpecialCallHandler:
     def _value_to_python(self, value: ASTNode) -> str:
         """将值节点转换为 Python 代码"""
         from .expression_builder import ExpressionBuilder
-        expr_builder = ExpressionBuilder(self.parent)
+        expr_builder = ExpressionBuilder(self.parent, self.parent.value_formatter)
         return expr_builder._value_to_python(value)

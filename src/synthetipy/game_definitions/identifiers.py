@@ -6,13 +6,13 @@ PDXLang 标识符分类
 """
 
 # 共享标识符（同时存在于 trigger 和 effect 中）
-SHARED_IDENTIFIERS = {
+SHARED_IDENTIFIERS = frozenset({
     'closest_system', 'custom_tooltip', 'debug_break', 'else', 'else_if', 'if', 'inverted_switch', 
     'log', 'switch', 'trait_of_species', 'traits_available_for_species',
-}
+})
 
 # Trigger 独占标识符
-TRIGGER_EXCLUSIVE = {
+TRIGGER_IDENTIFIERS_EXCLUSIVE = frozenset({
     'acquired_specimen_count', 'additional_crisis_strength', 'agreement_preset', 
     'ai_colonize_plans', 'ai_terraform_plans', 'ai_wants_to_negotiate_agreement', 
     'allowed_crisis_type', 'always', 'and', 'any_active_first_contact', 'any_agreement', 
@@ -295,10 +295,10 @@ TRIGGER_EXCLUSIVE = {
     'uses_ship_category', 'using_war_goal', 'valid_planet_killer_target', 'vassals', 
     'voidworms_scaling', 'war_begun_num_fleets_gone_mia', 'won_the_game', 'would_join_war', 
     'years_of_peace', 'years_passed',
-}
+})
 
 # Effect 独占标识符
-EFFECT_EXCLUSIVE = {
+EFFECT_IDENTIFIERS_EXCLUSIVE = frozenset({
     'abort_situation', 'abort_special_project', 'accept_covenant', 'activate_crisis_progression', 
     'activate_fog_machine', 'activate_gateway', 'activate_saved_leader', 'add_age', 'add_anomaly', 
     'add_ascension_perk', 'add_associate_member', 'add_asteroid_belt', 'add_attunement', 
@@ -585,4 +585,25 @@ EFFECT_EXCLUSIVE = {
     'unlock_council_slots', 'unlock_exhibit', 'unset_cosmic_storm', 'upgrade_megastructure_to', 
     'validate_and_repair_planet_buildings_and_districts', 'validate_planet_buildings_and_districts', 
     'weighted_random_owned_pop_group', 'weights', 'while', 'win',
-}
+})
+
+# 所有 Scopes
+SCOPES_IDENTIFIERS = frozenset({
+    'alliance', 'archaeological_site', 'army_leader', 'assembling_species', 'associated_federation', 
+    'astral_rift', 'attacker', 'aura_owner', 'background_planet', 'branch_office_owner', 
+    'built_species', 'capital_scope', 'capital_star', 'contact_country', 'controller', 'creator', 
+    'declining_species', 'defender', 'design', 'envoy_location_country', 'excavator_fleet', 
+    'explorer', 'federation', 'federation_leader', 'fleet', 'founder_species', 'from', 'fromfrom', 
+    'fromfromfrom', 'fromfromfromfrom', 'galactic_custodian', 'galactic_emperor', 'growing_species', 
+    'heir', 'home_planet', 'instigator', 'last_added_deposit', 'last_created_ambient_object', 
+    'last_created_army', 'last_created_cosmic_storm', 'last_created_cosmic_storm_influence_field', 
+    'last_created_country', 'last_created_design', 'last_created_fleet', 'last_created_leader', 
+    'last_created_pop_faction', 'last_created_ship', 'last_created_species', 'last_created_system', 
+    'leader', 'lock_country', 'mining_station', 'no_scope', 'observation_outpost', 
+    'observation_outpost_owner', 'orbit', 'orbital_defence', 'orbital_station', 'overlord', 'owner', 
+    'owner_main_species', 'owner_or_space_owner', 'owner_species', 'planet', 'planet_owner', 
+    'pop_faction', 'prev', 'prevprev', 'prevprevprev', 'prevprevprevprev', 'research_station', 
+    'reverse_first_contact', 'root', 'ruler', 'sector', 'sector_capital', 'ship_growth_stage', 
+    'solar_system', 'space_owner', 'spawner_planet', 'species', 'spynetwork', 'star', 'starbase', 
+    'storm_influence_field', 'system_star', 'target', 'target_system', 'this', 'unhappiest_pop',
+})

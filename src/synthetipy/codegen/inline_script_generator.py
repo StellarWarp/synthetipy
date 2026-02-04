@@ -24,6 +24,7 @@ from ..inline_script_utils import (
     format_meta_inline_script,
 )
 from .exceptions import UnsupportedFeatureError
+from ..pdx_constants import safe_identifier
 
 
 class InlineScriptContext(Enum):
@@ -114,26 +115,22 @@ class InlineScriptGenerator:
                 {k: str(v) for k, v in parameters.items()})
         
         # 解析为 AST
-        try:
-            from ..parser import parse
-            wrapped = f"_wrapper = {{\n{script_text}\n}}"
-            ast = parse(wrapped)
-            
-            if not ast.statements:
-                return ["# ERROR: empty inline_script"]
-            
-            # 提取内容块
-            first_stmt = ast.statements[0]
-            if isinstance(first_stmt, ObjectNode):
-                content_block = first_stmt.body
-            else:
-                content_block = BlockNode(ast.statements)
-            
-            # 生成代码（不递归展开，嵌套的 inline_script 生成 meta.inline_script）
-            return self._generate_from_block(content_block, context, scope_var)
-            
-        except Exception as e:
-            return [f"# ERROR: failed to parse inline_script '{script_path}': {e}"]
+        from ..parser import parse
+        wrapped = f"_wrapper = {{\n{script_text}\n}}"
+        ast = parse(wrapped)
+
+        if not ast.statements:
+            raise ValueError(f"inline_script '{script_path}' produced empty AST")
+
+        # 提取内容块
+        first_stmt = ast.statements[0]
+        if isinstance(first_stmt, ObjectNode):
+            content_block = first_stmt.body
+        else:
+            content_block = BlockNode(ast.statements)
+
+        # 生成代码（不递归展开，嵌套的 inline_script 生成 meta.inline_script）
+        return self._generate_from_block(content_block, context, scope_var)
     
     def _generate_from_block(
         self,
@@ -162,13 +159,10 @@ class InlineScriptGenerator:
         
         from .generators import ExpressionBuilder, GeneratorContext
         
-        # 创建临时上下文
+        # 创建临时上下文（无需 ValueFormatter）
         temp_generator = type('TempGenerator', (), {
             'context': GeneratorContext(scope_var),
-            'COMPARISON_OPS': self.trigger_generator.COMPARISON_OPS,
-            'LOGIC_OPERATORS': self.trigger_generator.LOGIC_OPERATORS,
-            'METHOD_PREFIXES': self.trigger_generator.METHOD_PREFIXES,
-            '_is_method_call': self.trigger_generator._is_method_call,
+            'parameters': {}
         })()
         temp_generator.context.in_trigger = True
         
@@ -196,7 +190,7 @@ class InlineScriptGenerator:
         self.effect_generator.context = GeneratorContext(scope_var)
         self.effect_generator.context.in_effect = True
         
-        # 初始化子生成器
+        # 初始化子生成器（不使用 ValueFormatter）
         self.effect_generator.expr_builder = ExpressionBuilder(self.effect_generator)
         self.effect_generator.loop_gen = EffectLoopGenerator(self.effect_generator)
         self.effect_generator.var_gen = EffectVariableGenerator(self.effect_generator)
@@ -266,15 +260,15 @@ class InlineScriptGenerator:
         if isinstance(value, LiteralNode):
             # 简单属性：planet_housing_add = 100
             val_str = self._format_literal(value)
-            return f"{scope_var}.{key} = {val_str}"
+            return f"{scope_var}.{safe_identifier(str(key))} = {val_str}"
         elif isinstance(value, BlockNode):
             # 块属性：planet_modifier = { ... }
             # 生成方法调用形式
             args = self._block_to_kwargs(value)
             if args:
-                return f"{scope_var}.{key}({args})"
+                return f"{scope_var}.{safe_identifier(str(key))}({args})"
             else:
-                return f"{scope_var}.{key}()"
+                return f"{scope_var}.{safe_identifier(str(key))}()"
         else:
             # 其他未处理的类型
             raise UnsupportedFeatureError(
@@ -303,7 +297,7 @@ class InlineScriptGenerator:
         parts = []
         for stmt in block.statements:
             if isinstance(stmt, PropertyNode):
-                key = stmt.key
+                key = str(stmt.key)
                 if isinstance(stmt.value, LiteralNode):
                     val = self._format_literal(stmt.value)
                 elif isinstance(stmt.value, BlockNode):
@@ -315,7 +309,7 @@ class InlineScriptGenerator:
                     )
                 else:
                     val = repr(str(stmt.value))
-                parts.append(f"{key}={val}")
+                parts.append(f"{safe_identifier(key)}={val}")
         return ", ".join(parts)
     
     def _generate_raw_code(self, block: BlockNode, scope_var: str) -> List[str]:
@@ -333,7 +327,7 @@ class InlineScriptGenerator:
                     meta_call = format_meta_inline_script(script_path, params)
                     lines.append(meta_call)
             elif isinstance(stmt, PropertyNode):
-                key = stmt.key
+                key = str(stmt.key)
                 if isinstance(stmt.value, LiteralNode):
                     lines.append(f"{key} = {self._format_literal(stmt.value)}")
                 elif isinstance(stmt.value, BlockNode):

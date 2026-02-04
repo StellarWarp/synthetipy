@@ -59,8 +59,7 @@ class Compiler:
         elif isinstance(node, CommentNode):
             return self._compile_comment(node)
         else:
-            # 未知节点类型，尝试获取原始表示
-            return str(node)
+            raise NotImplementedError(f"Unsupported AST node type: {type(node).__name__}")
     
     def _get_indent(self) -> str:
         """获取当前缩进字符串"""
@@ -78,9 +77,20 @@ class Compiler:
     def _compile_object(self, node: ObjectNode) -> str:
         """编译对象定义"""
         indent = self._get_indent()
-        name = node.name
+        name = node.name if not isinstance(node.name, ASTNode) else self.compile(node.name)
         body = self.compile(node.body)
         return f"{indent}{name} = {body}"
+
+    def _compile_property(self, node: PropertyNode) -> str:
+        """编译属性赋值"""
+        indent = self._get_indent()
+        key = node.key if not isinstance(node.key, ASTNode) else self.compile(node.key)
+
+        # 如果 key 包含空格或特殊字符，可能需要加引号
+        # 但在 PDXLang 中通常不需要
+
+        value = self.compile(node.value)
+        return f"{indent}{key} = {value}"
     
     def _compile_property(self, node: PropertyNode) -> str:
         """编译属性赋值"""
@@ -185,8 +195,9 @@ class Compiler:
         return f"{indent}{node.name}"
     
     def _compile_identifier_expression(self, node: IdentifierExpressionNode) -> str:
-        """编译标识符表达式"""
-        return node.expression
+        """编译标识符表达式（使用 AST 节点自带序列化）"""
+        # IdentifierExpressionNode 提供 to_source()，直接使用即可。
+        return node.to_source()
     
     def _compile_conditional_param(self, node: ConditionalParamNode) -> str:
         """编译条件参数块 [[PARAM] ... ]"""

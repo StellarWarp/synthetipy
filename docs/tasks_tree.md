@@ -61,7 +61,7 @@
 
 ### 2.1 Effect 生成器
 - [x] ~~删除 PRIMARY_KEYS/RESOURCE_KEYS 硬编码~~
-- [x] ~~统一值格式化（_format_value）~~
+- [x] ~~统一值格式化（_format_literal）~~
 - [ ] **利用游戏规则优化参数顺序**
   - [ ] 读取 EFFECTS_BLOCK/EFFECTS_SIMPLE 中的 params
   - [ ] 根据 params[0] 确定第一个位置参数
@@ -73,7 +73,7 @@
 
 ### 2.2 Trigger 生成器
 - [ ] **统一值格式化逻辑**
-  - [ ] 迁移到 _format_value() 方法
+  - [ ] 迁移到 _format_literal() 方法
   - [ ] 处理宏参数不加引号
   - [ ] 处理数字/布尔值
 - [ ] **利用游戏规则**
@@ -83,7 +83,7 @@
 
 ### 2.3 Value 生成器
 - [ ] **统一值格式化逻辑**
-  - [ ] 迁移到 _format_value() 方法
+  - [ ] 迁移到 _format_literal() 方法
   - [ ] 确保数字不加引号
 - [ ] **算术表达式优化**
   - [ ] base/add/multiply 转换为 Python 运算
