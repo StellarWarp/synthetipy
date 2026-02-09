@@ -9,6 +9,8 @@ PDXLang Statement Parser - 语句解析器
 """
 
 from typing import Union, Optional
+
+from synthetipy.ast_nodes_basic import WrappedString
 from .lexer import Token, TokenType
 from .parser_utils import SYSTEM_DIRECTIVES
 from ..ast_nodes import (
@@ -155,7 +157,7 @@ class StatementParserMixin:
                 operator = self.get_operator_string(op_token.type)
                 right = self.parse_value()
                 
-                comparison = ComparisonNode(key_str, operator, right)
+                comparison = ComparisonNode(WrappedString(key_str), operator, right)
                 comparison.line = num_token.line
                 comparison.column = num_token.column
                 return comparison
@@ -198,7 +200,7 @@ class StatementParserMixin:
             # 解析右值
             right = self.parse_value()
             
-            comparison = ComparisonNode(key_str, operator, right)
+            comparison = ComparisonNode(key_node, operator, right)
             comparison.line = key_node.line
             comparison.column = key_node.column
             
@@ -215,14 +217,15 @@ class StatementParserMixin:
         
         value = self.parse_value()
         
+        # TODO 这部分逻辑移动到二次解析中，在这里先生成普通属性节点
         # 特殊处理：如果是 inline_script，生成 InlineScriptNode
-        if key_str == 'inline_script':
-            script_path, params = self._extract_inline_script_info(value)
-            if script_path:
-                inline_script = InlineScriptNode(script_path, params)
-                inline_script.line = key_node.line
-                inline_script.column = key_node.column
-                value = inline_script
+        # if key_str == 'inline_script':
+        #     script_path, params = self._extract_inline_script_info(value)
+        #     if script_path:
+        #         inline_script = InlineScriptNode(script_path, params)
+        #         inline_script.line = key_node.line
+        #         inline_script.column = key_node.column
+        #         value = inline_script
         
         prop = PropertyNode(key_node, value)
         prop.line = key_node.line
@@ -270,19 +273,9 @@ class StatementParserMixin:
                     
                     if key == 'script':
                         # Extract script path
-                        if isinstance(stmt.value, LiteralNode):
-                            script_path = stmt.value.value
-                        elif isinstance(stmt.value, IdentifierExpressionNode):
-                            script_path = stmt.value.expression
+                        assert isinstance(stmt.value, LiteralNode)
+                        script_path = stmt.value
                     else:
-                        # Extract parameters
-                        if isinstance(stmt.value, LiteralNode):
-                            params[key] = stmt.value.value
-                        elif isinstance(stmt.value, IdentifierExpressionNode):
-                            params[key] = stmt.value.expression
-                        elif isinstance(stmt.value, BlockNode):
-                            params[key] = stmt.value
-                        else:
-                            params[key] = stmt.value
+                        params[key] = stmt.value
         
         return script_path, params

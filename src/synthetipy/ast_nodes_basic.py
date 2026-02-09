@@ -19,6 +19,19 @@ class ASTNode(ABC):
     def __repr__(self):
         return f"{self.__class__.__name__}()"
 
+class WrappedString(ASTNode):
+    def __init__(self, value: str):
+        super().__init__()
+        self.value = value
+        
+    def accept(self, visitor):
+        return visitor.visit_wraped_string(self)
+    
+    def __repr__(self):
+        return f"'{self.value}'"
+    
+    def __str__(self):
+        return self.value
 
 class DocumentNode(ASTNode):
     """文档根节点 - 包含所有顶层语句"""
@@ -47,7 +60,7 @@ class ObjectNode(ASTNode):
         tech_$AREA$_1 = { ... }  # 宏参数
     """
     
-    def __init__(self, name: Union[str, 'MacroIdentifierNode'], body: 'BlockNode'):
+    def __init__(self, name: Any, body: 'BlockNode'):
         super().__init__()
         self.name = name
         self.body = body
@@ -74,11 +87,15 @@ class PropertyNode(ASTNode):
     
     def __init__(self, key: Any, value: ASTNode):
         super().__init__()
-        self.key = key
+        if isinstance(key, str):
+            key = WrappedString(key)
+        elif isinstance(key, ASTNode):
+            self.key = key
+        else:
+            assert False, f"Invalid key type for PropertyNode: {type(key)}"
+        key.parent = self
         self.value = value
         value.parent = self
-        if isinstance(key, ASTNode):
-            key.parent = self
     
     def accept(self, visitor):
         return visitor.visit_property(self)
@@ -156,10 +173,10 @@ class LiteralNode(ASTNode):
                 self.value = value
             elif isinstance(value, str):
                 # 检查是否是布尔值
-                if value.lower() in ('yes', 'true'):
+                if value.lower() in 'yes':
                     self.value_type = 'bool'
                     self.value = True
-                elif value.lower() in ('no', 'false'):
+                elif value.lower() in 'no':
                     self.value_type = 'bool'
                     self.value = False
                 # 检查是否是数字
@@ -202,7 +219,7 @@ class ListNode(ASTNode):
     包含多个值的列表（不是键值对）
     """
     
-    def __init__(self, items: List[Union[LiteralNode, 'IdentifierExpressionNode']]):
+    def __init__(self, items: List[Any]):
         super().__init__()
         self.items = items
         for item in items:
@@ -230,7 +247,9 @@ class ConditionNode(ASTNode):
     def __init__(self, operator: str, body: BlockNode):
         super().__init__()
         assert operator in self.OPERATORS, f"Invalid operator: {operator}"
-        self.operator = operator
+        assert isinstance(operator, str), "Operator should be a string"
+        self.operator = WrappedString(operator)
+        self.operator.parent = self
         self.body = body
         body.parent = self
     
@@ -253,11 +272,13 @@ class ComparisonNode(ASTNode):
     
     OPERATORS = ['=', '>', '<', '>=', '<=', '==', '!=']
     
-    def __init__(self, left: Union[str, 'MacroIdentifierNode'], operator: str, right: ASTNode):
+    def __init__(self, left, operator: str, right: ASTNode):
         super().__init__()
         assert operator in self.OPERATORS, f"Invalid operator: {operator}"
+        assert isinstance(operator, str), "Operator should be a string"
+        self.operator = WrappedString(operator)
+        self.operator.parent = self
         self.left = left
-        self.operator = operator
         self.right = right
         right.parent = self
         if isinstance(left, ASTNode):
@@ -281,8 +302,9 @@ class InlineScriptNode(ASTNode):
         }
     """
     
-    def __init__(self, script_path: str, parameters: Dict[str, Any]):
+    def __init__(self, script_path: LiteralNode, parameters: Dict[str, Any]):
         super().__init__()
+        assert isinstance(script_path, LiteralNode), "script_path should be a LiteralNode"
         self.script_path = script_path
         self.parameters = parameters
     
@@ -323,7 +345,9 @@ class DirectiveNode(ASTNode):
     
     def __init__(self, name: str):
         super().__init__()
-        self.name = name
+        assert isinstance(name, str), "name should be a string"
+        self.name = WrappedString(name)
+        self.name.parent = self
     
     def accept(self, visitor):
         return visitor.visit_directive(self)
@@ -346,7 +370,9 @@ class ConditionalParamNode(ASTNode):
     
     def __init__(self, param_name: str, body: List[ASTNode]):
         super().__init__()
-        self.param_name = param_name  # 例如 "SPIRITUALIST" 或 "!SPIRITUALIST"
+        assert isinstance(param_name, str), "param_name should be a string"
+        self.param_name = WrappedString(param_name)  # 例如 "SPIRITUALIST" 或 "!SPIRITUALIST"
+        self.param_name.parent = self
         self.body = body
         for stmt in body:
             stmt.parent = self
@@ -370,7 +396,9 @@ class ConstantNode(ASTNode):
     
     def __init__(self, name: str):
         super().__init__()
-        self.name = name
+        assert isinstance(name, str), "name should be a string"
+        self.name = WrappedString(name)  # 例如 "@b1_time"
+        self.name.parent = self
     
     def accept(self, visitor):
         return visitor.visit_constant(self)
@@ -392,7 +420,9 @@ class ConstantDefinitionNode(ASTNode):
     
     def __init__(self, name: str, value: ASTNode):
         super().__init__()
-        self.name = name  # 例如 "@buildings_t1"
+        assert isinstance(name, str), "name should be a string"
+        self.name = WrappedString(name)  # 例如 "@buildings_t1"
+        self.name.parent = self
         self.value = value
         value.parent = self
     

@@ -4,6 +4,8 @@ Synthetipy - 代码生成器/编译器
 """
 
 from typing import List, Optional, TextIO
+
+from synthetipy.ast_nodes_expression import ScopeNode
 from .ast_nodes import (
     ASTNode, DocumentNode, ObjectNode, PropertyNode, BlockNode, 
     LiteralNode, ListNode, ConditionNode, ComparisonNode, CommentNode,
@@ -50,6 +52,8 @@ class Compiler:
             return self._compile_directive(node)
         elif isinstance(node, IdentifierExpressionNode):
             return self._compile_identifier_expression(node)
+        elif isinstance(node, ScopeNode):
+            return self._compile_scope(node)
         elif isinstance(node, ConditionalParamNode):
             return self._compile_conditional_param(node)
         elif isinstance(node, InlineArithmeticNode):
@@ -132,7 +136,7 @@ class Compiler:
             for item in node.items
         )
         
-        if all_simple and len(node.items) <= 5:
+        if all_simple and len(node.items) <= 1:
             # 简单列表，单行显示
             items_str = ' '.join(self.compile(item) for item in node.items)
             return f"{{ {items_str} }}"
@@ -154,7 +158,7 @@ class Compiler:
     def _compile_condition(self, node: ConditionNode) -> str:
         """编译逻辑条件"""
         indent = self._get_indent()
-        operator = node.operator.upper()
+        operator = node.operator
         body = self.compile(node.body)
         return f"{indent}{operator} = {body}"
     
@@ -178,6 +182,9 @@ class Compiler:
         elif value_type == 'constant':
             # 常量引用 @constant
             return value
+        elif value_type == 'bool':
+            # 布尔值输出 yes/no
+            return 'yes' if value else 'no'
         else:
             # 数字、标识符等直接输出
             return str(value)
@@ -197,6 +204,11 @@ class Compiler:
     def _compile_identifier_expression(self, node: IdentifierExpressionNode) -> str:
         """编译标识符表达式（使用 AST 节点自带序列化）"""
         # IdentifierExpressionNode 提供 to_source()，直接使用即可。
+        return node.to_source()
+    
+    def _compile_scope(self, node: ScopeNode) -> str:
+        """编译 scope 绑定"""
+        # ScopeNode 提供 to_source()，直接使用即可。
         return node.to_source()
     
     def _compile_conditional_param(self, node: ConditionalParamNode) -> str:

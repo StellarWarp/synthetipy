@@ -10,6 +10,7 @@ PDXLang Patcher - 语法分析器（重构版）
 - ExpressionParser 处理表达式解析
 """
 
+from pathlib import Path
 from typing import List, Optional, Union
 from .parsing.lexer import Token, TokenType
 from .parsing.parser_context import ParserContext, get_parser_context
@@ -18,7 +19,7 @@ from .parsing.parser_utils import ParserError, ParserContextHelper
 from .parsing.statement_parser import StatementParserMixin
 from .parsing.value_parser import ValueParserMixin
 from .ast_nodes import *
-
+from .parsing.lexer import Lexer
 
 class Parser(StatementParserMixin, ValueParserMixin):
     """递归下降语法分析器（重构版）
@@ -249,11 +250,16 @@ class Parser(StatementParserMixin, ValueParserMixin):
 
 
 def parse(text: str) -> DocumentNode:
-    """便捷函数：直接从文本解析为 AST"""
-    from .parsing.lexer import Lexer
+
     
     lexer = Lexer(text)
     tokens = lexer.tokenize()
     
     parser = Parser(tokens, source_text=text)
     return parser.parse()
+
+def parse_file(file_path: Path) -> DocumentNode:
+    """便捷函数：直接从文件解析为 AST"""
+    with file_path.open("r", encoding="utf-8") as f:
+        text = f.read()
+    return parse(text)
