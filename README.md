@@ -16,6 +16,11 @@ A Python library for Stellaris modding
 - Produces merge outputs suitable for testing or as a final merged mod directory.
 
 ### Quick start
+
+```bash
+pip install synthetipy
+```
+
 ```python
 from pathlib import Path
 from synthetipy.script_merger.interface import *
@@ -75,6 +80,15 @@ What is **resolvable edit conflicts**？
 - Ensure GAME_FOLDER points to your Stellaris installation when needed.
 - Merge outputs include generated edits and merged files; review before publishing.
 - To change merge behavior, update interface configuration and relevant modules.
+
+---
+
+### Modding in Python
+
+(On going work...)
+
+Generate PDX Script into python code, allowing modders to write mods in Python and compile them backto PDX Script.
+
 
 # Contributing
 - Add tests for new features or bug fixes and submit a PR.

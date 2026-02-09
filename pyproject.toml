@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "synthetipy"
 version = "0.1.0"
-description = "Python 工具包：将 Paradox 脚本语言转换为可编程的 AST"
+description = "Python library for Stellaris modding, including a mod merger and script generator."
 # 修正：readme 应该是直接指向文件，content-type 通常是自动识别的
 readme = "README.md"
 requires-python = ">=3.8"
